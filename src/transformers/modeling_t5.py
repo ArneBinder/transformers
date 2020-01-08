@@ -33,6 +33,8 @@ from .modeling_utils import PreTrainedModel, prune_linear_layer
 
 logger = logging.getLogger(__name__)
 
+ENSURE_DEFAULT_RELATIVE_POSITION = True
+
 ####################################################
 # This dict contrains shortcut names and associated url
 # for the pretrained weights provided with the models
@@ -276,11 +278,9 @@ class T5Attention(nn.Module):
         ret += torch.where(is_small, n, val_if_large)
         return ret
 
-    def compute_bias(self, qlen, klen):
+    def compute_bias(self, relative_position):
         """ Compute binned relative position bias """
-        context_position = torch.arange(qlen, dtype=torch.long)[:, None]
-        memory_position = torch.arange(klen, dtype=torch.long)[None, :]
-        relative_position = memory_position - context_position  # shape (qlen, klen)
+        # TODO: do batch wise!
         rp_bucket = self._relative_position_bucket(
             relative_position,  # shape (qlen, klen)
             bidirectional=not self.is_decoder,
@@ -290,7 +290,7 @@ class T5Attention(nn.Module):
         values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
         return values
 
-    def forward(self, input, mask=None, kv=None, position_bias=None, cache=None, head_mask=None):
+    def forward(self, input, mask=None, kv=None, position_bias=None, cache=None, head_mask=None, relative_position=None):
         """
         Self-attention (if kv is None) or attention over source sentence (provided by kv).
         """
@@ -335,7 +335,17 @@ class T5Attention(nn.Module):
         if position_bias is None:
             if not self.has_relative_attention_bias:
                 raise ValueError("No position_bias provided and no weights to compute position_bias")
-            position_bias = self.compute_bias(qlen, klen)
+            if relative_position is None or ENSURE_DEFAULT_RELATIVE_POSITION:
+                context_position = torch.arange(qlen, dtype=torch.long)[:, None]
+                memory_position = torch.arange(klen, dtype=torch.long)[None, :]
+                relative_position_default = memory_position - context_position  # shape (qlen, klen)
+                if ENSURE_DEFAULT_RELATIVE_POSITION:# and relative_position is not None:
+                    assert torch.equal(relative_position_default, relative_position), \
+                        'external relative_position do not match original calculation'
+                relative_position = relative_position_default
+
+            assert relative_position is not None, 'no relative_position available'
+            position_bias = self.compute_bias(relative_position)
             if mask is not None:
                 position_bias = position_bias + mask  # (bs, n_heads, qlen, klen)
 
@@ -367,10 +377,11 @@ class T5LayerSelfAttention(nn.Module):
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
-    def forward(self, hidden_states, attention_mask=None, position_bias=None, head_mask=None):
+    def forward(self, hidden_states, attention_mask=None, position_bias=None, head_mask=None, relative_position=None):
         norm_x = self.layer_norm(hidden_states)
         attention_output = self.SelfAttention(
-            norm_x, mask=attention_mask, position_bias=position_bias, head_mask=head_mask
+            norm_x, mask=attention_mask, position_bias=position_bias, head_mask=head_mask,
+            relative_position=relative_position
         )
         y = attention_output[0]
         layer_output = hidden_states + self.dropout(y)
@@ -385,15 +396,29 @@ class T5LayerCrossAttention(nn.Module):
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
-    def forward(self, hidden_states, kv, attention_mask=None, position_bias=None, head_mask=None):
+    def forward(self, hidden_states, kv, attention_mask=None, position_bias=None, head_mask=None,
+                relative_position=None):
         norm_x = self.layer_norm(hidden_states)
         attention_output = self.EncDecAttention(
-            norm_x, mask=attention_mask, kv=kv, position_bias=position_bias, head_mask=head_mask
+            norm_x, mask=attention_mask, kv=kv, position_bias=position_bias, head_mask=head_mask,
+            relative_position=relative_position
         )
         y = attention_output[0]
         layer_output = hidden_states + self.dropout(y)
         outputs = (layer_output,) + attention_output[1:]  # add attentions if we output them
         return outputs
+
+
+def calculate_relative_position(hidden_states, kv=None):
+    qlen = hidden_states.size(1)
+    if kv is None:
+        klen = qlen  # if cache is None else cache["slen"] + qlen
+    else:
+        klen = kv.size(1)
+    context_position = torch.arange(qlen, dtype=torch.long)[:, None]
+    memory_position = torch.arange(klen, dtype=torch.long)[None, :]
+    relative_position = memory_position - context_position  # shape (qlen, klen)
+    return relative_position
 
 
 class T5Block(nn.Module):
@@ -417,9 +442,12 @@ class T5Block(nn.Module):
         encoder_attention_mask=None,
         encoder_decoder_position_bias=None,
         head_mask=None,
+        #relative_position=None,
+        #encoder_relative_position=None,
     ):
         self_attention_outputs = self.layer[0](
-            hidden_states, attention_mask=attention_mask, position_bias=position_bias, head_mask=head_mask
+            hidden_states, attention_mask=attention_mask, position_bias=position_bias, head_mask=head_mask,
+            relative_position=calculate_relative_position(hidden_states=hidden_states)
         )
         hidden_states = self_attention_outputs[0]
         outputs = self_attention_outputs[1:]  # Keep self-attention outputs and relative position weights
@@ -433,6 +461,7 @@ class T5Block(nn.Module):
                 attention_mask=encoder_attention_mask,
                 position_bias=encoder_decoder_position_bias,
                 head_mask=head_mask,
+                relative_position=calculate_relative_position(hidden_states=hidden_states, kv=encoder_hidden_states),
             )
             hidden_states = cross_attention_outputs[0]
             outputs = (
@@ -520,8 +549,9 @@ class T5Stack(T5PreTrainedModel):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         head_mask=None,
+        #relative_position=None,
+        #encoder_relative_position=None
     ):
-
         batch_size, seq_length = hidden_states.shape[0], hidden_states.shape[1]
         if attention_mask is None:
             attention_mask = torch.ones(batch_size, seq_length).to(hidden_states.device)
@@ -614,6 +644,8 @@ class T5Stack(T5PreTrainedModel):
                 encoder_attention_mask=encoder_extended_attention_mask,
                 encoder_decoder_position_bias=encoder_decoder_position_bias,
                 head_mask=head_mask[i],
+                #relative_position=relative_position,
+                #encoder_relative_position=encoder_relative_position
             )
             # layer_outputs is a tuple with:
             # hidden-states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)
@@ -777,6 +809,7 @@ class T5Model(T5PreTrainedModel):
                 encoder_attention_mask = (encoder_attention_mask != 0).to(hidden_states)
                 hidden_states = hidden_states * encoder_attention_mask.unsqueeze(-1)
 
+            #kwargs_encoder["relative_position"] = calculate_relative_position(hidden_states=hidden_states)
             encoder_outputs = self.encoder(hidden_states, **kwargs_encoder)
             encoder_hidden_states = encoder_outputs[0]
         else:
@@ -791,6 +824,9 @@ class T5Model(T5PreTrainedModel):
 
         kwargs_decoder["encoder_hidden_states"] = encoder_hidden_states
         kwargs_decoder["encoder_attention_mask"] = encoder_attention_mask
+        #kwargs_decoder["encoder_relative_position"] = kwargs_encoder["relative_position"]
+        #kwargs_decoder["relative_position"] = calculate_relative_position(hidden_states=hidden_states,
+        #                                                                  kv=encoder_hidden_states)
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
 
         return decoder_outputs + encoder_outputs
@@ -879,6 +915,7 @@ class T5WithLMHeadModel(T5PreTrainedModel):
                 encoder_inputs_ids = kwargs_encoder.pop("input_ids")
                 hidden_states = self.shared(encoder_inputs_ids)  # Convert inputs in embeddings
 
+            #kwargs_encoder["relative_position"] = calculate_relative_position(hidden_states=hidden_states)
             encoder_outputs = self.encoder(hidden_states, **kwargs_encoder)
             encoder_hidden_states = encoder_outputs[0]
         else:
@@ -893,6 +930,9 @@ class T5WithLMHeadModel(T5PreTrainedModel):
 
         kwargs_decoder["encoder_hidden_states"] = encoder_hidden_states
         kwargs_decoder["encoder_attention_mask"] = kwargs_encoder.get("attention_mask", None)
+        #kwargs_decoder["encoder_relative_position"] = kwargs_encoder["relative_position"]
+        #kwargs_decoder["relative_position"] = calculate_relative_position(hidden_states=hidden_states,
+        #                                                                  kv=encoder_hidden_states)
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
 
         sequence_output = decoder_outputs[0]
