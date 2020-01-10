@@ -185,6 +185,7 @@ class T5LayerFF(nn.Module):
 
 class T5Attention(nn.Module):
     NEW_ID = itertools.count()
+    RELATIVE_POSITION_SPECIAL_OFFSET = 1000000
 
     def __init__(self, config, has_relative_attention_bias=False):
         super(T5Attention, self).__init__()
@@ -194,6 +195,7 @@ class T5Attention(nn.Module):
 
         self.output_attentions = config.output_attentions
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
+        self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
         self.d_model = config.d_model
         self.d_kv = config.d_kv
         self.n_heads = config.num_heads
@@ -208,6 +210,9 @@ class T5Attention(nn.Module):
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
+            if self.relative_attention_num_buckets_special:
+                self.relative_attention_bias_special = nn.Embedding(self.relative_attention_num_buckets_special,
+                                                                    self.n_heads)
         self.pruned_heads = set()
 
     def prune_heads(self, heads):
@@ -288,12 +293,27 @@ class T5Attention(nn.Module):
         Returns:
             a float Tensor of shape (bsz, num_heads, qlen, klen)
         """
+        mask_special = None
+        values_special = None
+        # TODO: this is not efficient because all values are embedded twice!
+        # use separate embedding for special relative_positions (>= RELATIVE_POSITION_SPECIAL_OFFSET)
+        if self.relative_attention_num_buckets_special > 0:
+            mask_special = relative_position >= T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET
+            rp_bucket_special = torch.where(mask_special,
+                                            relative_position - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
+                                            torch.zeros_like(relative_position))
+            values_special = self.relative_attention_bias_special(rp_bucket_special)
+            relative_position[mask_special] = 0
+
         rp_bucket = self._relative_position_bucket(
             relative_position,  # shape (qlen, klen) or (bsz, qlen, klen)
             bidirectional=not self.is_decoder,
             num_buckets=self.relative_attention_num_buckets,
         )
+
         values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads) or (bsz, qlen, klen, num_heads)
+        if values_special is not None:
+            values = torch.where(mask_special.unsqueeze(-1), values_special, values)
 
         if len(values.size()) < 3:  # same relative_positions for all q and k positions (used for special cross-graph distance)
             assert len(values.size()) == 1 or values.size(0) == 1, f'expected a single embedding, but got {values.size(0)}'
