@@ -279,15 +279,29 @@ class T5Attention(nn.Module):
         return ret
 
     def compute_bias(self, relative_position):
-        """ Compute binned relative position bias """
-        # TODO: do batch wise!
+        """
+        Compute binned relative position bias.
+        relative_position may be batch wise i.e. shape: (bsz, qlen, klen), same for all batches, i.e. shape: (qlen, klen),
+        or same for all distances, i.e. shape: (1,).
+        Args:
+            relative_position: an int32 Tensor
+        Returns:
+            a float Tensor of shape (bsz, num_heads, qlen, klen)
+        """
         rp_bucket = self._relative_position_bucket(
-            relative_position,  # shape (qlen, klen)
+            relative_position,  # shape (qlen, klen) or (bsz, qlen, klen)
             bidirectional=not self.is_decoder,
             num_buckets=self.relative_attention_num_buckets,
         )
-        values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads)
-        values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
+        values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads) or (bsz, qlen, klen, num_heads)
+
+        if len(values.size()) < 3:  # same relative_positions for all q and k positions (used for special cross-graph distance)
+            assert len(values.size()) == 1 or values.size(0) == 1, f'expected a single embedding, but got {values.size(0)}'
+            values = values.view(1, 1, values.size(-1))  # add q and k dimensions
+        if len(values.size()) == 3:  # same relative_positions for all batches
+            values = values.unsqueeze(0)  # add batch dimension
+
+        values = values.permute([0, 3, 1, 2])  # shape (bsz, num_heads, qlen, klen) where bsz, qlen and klen may be 1 for broadcasting
         return values
 
     def forward(self, input, mask=None, kv=None, position_bias=None, cache=None, head_mask=None, relative_position=None):
@@ -339,12 +353,12 @@ class T5Attention(nn.Module):
                 context_position = torch.arange(qlen, dtype=torch.long)[:, None]
                 memory_position = torch.arange(klen, dtype=torch.long)[None, :]
                 relative_position_default = memory_position - context_position  # shape (qlen, klen)
-                if ENSURE_DEFAULT_RELATIVE_POSITION:# and relative_position is not None:
+                if relative_position is not None: #and ENSURE_DEFAULT_RELATIVE_POSITION:
                     assert torch.equal(relative_position_default, relative_position), \
                         'external relative_position do not match original calculation'
                 relative_position = relative_position_default
 
-            assert relative_position is not None, 'no relative_position available'
+            #assert relative_position is not None, 'no relative_position available'
             position_bias = self.compute_bias(relative_position)
             if mask is not None:
                 position_bias = position_bias + mask  # (bs, n_heads, qlen, klen)
