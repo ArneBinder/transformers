@@ -994,8 +994,10 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             Indices should be in ``[-1, 0, ..., config.vocab_size]`` (see ``input_ids`` docstring)
             Tokens with indices set to ``-1`` are ignored (masked), the loss is only computed for the tokens with labels
             in ``[0, ..., config.vocab_size]``
-        **relative_position_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, sequence_length,
-            sequence_length)``:
+        **relative_position_indices**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, ): indices of output
+            (decoding) tokens to calculate the relative positions for (one per instance / sequence!)
+        **relative_position_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, sequence_length, )``:
+            relative positions with respect to tokens indexed by ``relative_position_indices`` (required)
 
     Outputs: `Tuple` comprising various elements depending on the configuration (config) and inputs:
         **loss**: (`optional`, returned when ``lm_labels`` is provided) ``torch.FloatTensor`` of shape ``(1,)``:
@@ -1022,7 +1024,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
-        config.relative_attention_num_buckets_special = 1   # for "infinite" relative_position
+        config.relative_attention_num_buckets_special = 2   # for "infinite" and "unknown" relative_position
+        config.relative_position_hidden_states_dim = 50
 
         self.model_dim = config.d_model
 
@@ -1037,12 +1040,17 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-        self.encoder_relative_position_head = nn.Linear(config.d_model,
-                                                        config.relative_attention_num_buckets
-                                                        + config.relative_attention_num_buckets_special, bias=False)
-        self.decoder_relative_position_head = nn.Linear(config.d_model,
-                                                        config.relative_attention_num_buckets
-                                                        + config.relative_attention_num_buckets_special, bias=False)
+        # TODO: decide for bias and activation
+        self.encoder_relative_position_projection = nn.Linear(config.d_model,
+                                                              config.relative_position_hidden_states_dim,
+                                                              bias=False)
+        self.decoder_relative_position_projection = nn.Linear(config.d_model,
+                                                              config.relative_position_hidden_states_dim, bias=False)
+
+        self.relative_position_head = nn.linear(config.relative_position_hidden_states_dim,
+                                                config.relative_attention_num_buckets
+                                                + config.relative_attention_num_buckets_special,
+                                                bias=False)
 
         self.init_weights()
 
@@ -1067,6 +1075,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
+        decoder_relative_position_indices = kwargs.pop("decoder_relative_position_indices", None)
+
 
         kwargs_common = dict(
             (k, v) for k, v in kwargs.items() if not k.startswith("encoder_") and not k.startswith("decoder_")
@@ -1078,6 +1088,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         # Encode if needed (training, first prediction pass)
         encoder_hidden_states = kwargs_encoder.pop("hidden_states", None)
+        encoder_relative_position_hidden_states = kwargs_encoder.pop("encoder_relative_position_hidden_states", None)
         if encoder_hidden_states is None:
             # Convert encoder inputs in embeddings if needed
             hidden_states = kwargs_encoder.pop("inputs_embeds", None)
@@ -1087,10 +1098,9 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
             encoder_outputs = self.encoder(hidden_states, **kwargs_encoder)
             encoder_hidden_states = encoder_outputs[0]
+            encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states)
         else:
             encoder_outputs = ()
-
-        encoder_next_relative_position_logits = self.encoder_relative_position_head(encoder_hidden_states)
 
         # Decode
         # Convert decoder inputs in embeddings if needed
@@ -1107,7 +1117,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position #.transpose(-2,-1)
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
 
-        decoder_next_relative_position_logits = self.decoder_relative_position_head(encoder_hidden_states)
+        decoder_relative_position_hiddens_states = self.decoder_relative_position_projection(encoder_hidden_states)
 
         sequence_output = decoder_outputs[0]
         # Rescale output before projecting on vocab
@@ -1115,31 +1125,61 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         sequence_output = sequence_output * (self.model_dim ** -0.5)
         lm_logits = self.lm_head(sequence_output)
 
+        losses = []
         decoder_outputs = (lm_logits,) + decoder_outputs[1:]  # Add hidden states and attention if they are here
         if lm_labels is not None:
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = lm_labels[..., 1:].contiguous()
             loss_fct = CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-            decoder_outputs = (
-                loss,
-            ) + decoder_outputs  # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            #decoder_outputs = (
+            #    loss,
+            #) + decoder_outputs  # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            losses.append(loss)
 
-        next_relative_position_logits = decoder_next_relative_position_logits
+        if encoder_relative_position_hidden_states is not None:
+            relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
+                                                          decoder_relative_position_hiddens_states), dim=1)
+        else:
+            relative_position_hidden_states = decoder_relative_position_hiddens_states
+
+        if decoder_relative_position_labels is not None:
+            assert decoder_relative_position_indices is not None, \
+                'argument decoder_relative_position_indices is missing, but required when decoder_relative_position_labels is given'
+
+        relative_position_logits = None
+        if decoder_relative_position_indices is not None:
+            # get relative_position_hidden_states for indexed tokens
+            selected_decoder_relative_position_hidden_states = decoder_relative_position_hiddens_states.gather(-2, decoder_relative_position_indices)  # shape (bsz, 1, projection_size)
+            # multiply with each entry in relative_position_hidden_states
+            prod = selected_decoder_relative_position_hidden_states * relative_position_hidden_states
+            # finally, project with self.relative_position_head
+            relative_position_logits = self.relative_position_head(prod)
+            decoder_outputs = decoder_outputs \
+                              + (relative_position_hidden_states[:, -decoder_relative_position_hiddens_states.size(1):], )
+            if encoder_relative_position_hidden_states is not None:
+                encoder_outputs = encoder_outputs \
+                                  + (relative_position_hidden_states[:, :encoder_relative_position_hidden_states.size(1)], )
+
         relative_position_labels = decoder_relative_position_labels
-        # prepend encoder-to-decoder labels and logits
+        # prepend encoder-to-decoder labels
         if encoder_decoder_relative_position_labels is not None:
             assert decoder_relative_position_labels is not None, \
                 'decoder_relative_position_labels is required if encoder_decoder_relative_position_labels is given'
-            # TODO: re-work!
             relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
                                                   relative_position_labels), dim=1)
-            next_relative_position_logits = torch.cat((encoder_next_relative_position_logits,
-                                                       next_relative_position_logits), dim=1)
+        else:
+            # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
+            relative_position_logits = relative_position_logits[:, -relative_position_labels.size(1):]
 
-        if decoder_relative_position_labels is not None:
-            raise NotImplementedError('implement loss calculation')
-            # calculate CrossEntropyLoss with respect to all target relative_distance rows, but return only best
-            # (minimal) loss
+        # TODO: calculate CrossEntropyLoss with respect to _all_ target relative_distance rows (+token predictions),
+        # but return only best (minimal) loss (currently, we expect _one_ correct relative_distance-row as
+        # relative_position_labels)
+        if relative_position_labels is not None:
+            shift_logits = relative_position_logits[..., :-1, :].contiguous()
+            shift_labels = relative_position_labels[..., 1:].contiguous()
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            losses.append(loss)
 
-        return decoder_outputs + encoder_outputs
+        return losses + decoder_outputs + encoder_outputs
