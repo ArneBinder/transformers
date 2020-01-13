@@ -1025,7 +1025,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
         config.relative_attention_num_buckets_special = 2   # for "infinite" and "unknown" relative_position
-        config.relative_position_hidden_states_dim = 50
+        config.relative_position_hidden_states_dim = 100
 
         self.model_dim = config.d_model
 
@@ -1176,6 +1176,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         # but return only best (minimal) loss (currently, we expect _one_ correct relative_distance-row as
         # relative_position_labels)
         if relative_position_labels is not None:
+            # TODO: is shifting correct here?
             shift_logits = relative_position_logits[..., :-1, :].contiguous()
             shift_labels = relative_position_labels[..., 1:].contiguous()
             loss_fct = CrossEntropyLoss(ignore_index=-1)
