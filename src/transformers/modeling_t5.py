@@ -1047,7 +1047,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.decoder_relative_position_projection = nn.Linear(config.d_model,
                                                               config.relative_position_hidden_states_dim, bias=False)
 
-        self.relative_position_head = nn.linear(config.relative_position_hidden_states_dim,
+        self.relative_position_head = nn.Linear(config.relative_position_hidden_states_dim,
                                                 config.relative_attention_num_buckets
                                                 + config.relative_attention_num_buckets_special,
                                                 bias=False)
