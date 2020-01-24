@@ -1049,7 +1049,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.decoder_relative_position_projection = nn.Linear(config.d_model,
                                                               config.relative_position_hidden_states_dim, bias=False)
 
-        self.relative_position_head = nn.Linear(config.relative_position_hidden_states_dim,
+        self.relative_position_head = nn.Linear(config.relative_position_hidden_states_dim * 3,
                                                 config.relative_attention_num_buckets
                                                 + config.relative_attention_num_buckets_special,
                                                 bias=False)
@@ -1156,7 +1156,10 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # multiply with each entry in relative_position_hidden_states
             prod = selected_decoder_relative_position_hidden_states * relative_position_hidden_states
             # finally, project with self.relative_position_head
-            relative_position_logits = self.relative_position_head(prod)
+            # TODO: test using only prod
+            relative_position_logits = self.relative_position_head(torch.cat([prod,
+                                                                              selected_decoder_relative_position_hidden_states,
+                                                                              relative_position_hidden_states], dim=-1))
             decoder_outputs = decoder_outputs \
                               + (relative_position_hidden_states[:, -decoder_relative_position_hiddens_states.size(1):], )
             if encoder_relative_position_hidden_states is not None:
