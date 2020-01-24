@@ -186,6 +186,8 @@ class T5LayerFF(nn.Module):
 class T5Attention(nn.Module):
     NEW_ID = itertools.count()
     RELATIVE_POSITION_SPECIAL_OFFSET = 1000000
+    RELATIVE_POSITION_INF = RELATIVE_POSITION_SPECIAL_OFFSET
+    RELATIVE_POSITION_UNK = RELATIVE_POSITION_SPECIAL_OFFSET + 1
 
     def __init__(self, config, has_relative_attention_bias=False):
         super(T5Attention, self).__init__()
