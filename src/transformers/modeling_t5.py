@@ -25,6 +25,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
+from torch.nn.modules.loss import _WeightedLoss
 
 from .configuration_t5 import T5Config
 from .file_utils import DUMMY_INPUTS, DUMMY_MASK, add_start_docstrings
@@ -188,6 +189,8 @@ class T5Attention(nn.Module):
     RELATIVE_POSITION_SPECIAL_OFFSET = 1000000
     RELATIVE_POSITION_INF = RELATIVE_POSITION_SPECIAL_OFFSET
     RELATIVE_POSITION_UNK = RELATIVE_POSITION_SPECIAL_OFFSET + 1
+    RELATIVE_POSITION_PAD = RELATIVE_POSITION_SPECIAL_OFFSET + 2
+    RELATIVE_POSITION_NUM_BUCKETS_SPECIAL = 3
 
     def __init__(self, config, has_relative_attention_bias=False):
         super(T5Attention, self).__init__()
@@ -197,7 +200,7 @@ class T5Attention(nn.Module):
 
         self.output_attentions = config.output_attentions
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
-        self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
+        #self.relative_attention_num_buckets_special = T5Attention.RELATIVE_POSITION_NUM_BUCKETS #config.relative_attention_num_buckets_special
         self.d_model = config.d_model
         self.d_kv = config.d_kv
         self.n_heads = config.num_heads
@@ -212,9 +215,8 @@ class T5Attention(nn.Module):
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
-            if self.relative_attention_num_buckets_special:
-                self.relative_attention_bias_special = nn.Embedding(self.relative_attention_num_buckets_special,
-                                                                    self.n_heads)
+            self.relative_attention_bias_special = nn.Embedding(T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
+                                                                self.n_heads)
         self.pruned_heads = set()
 
     def prune_heads(self, heads):
@@ -285,6 +287,40 @@ class T5Attention(nn.Module):
         ret += torch.where(is_small, n, val_if_large)
         return ret
 
+    @staticmethod
+    def _relative_position_bucket_with_special(relative_position, relative_attention_num_buckets,
+                                               relative_attention_num_buckets_special, bidirectional,
+                                               relative_attention_bias=None, relative_attention_bias_special=None):
+        mask_special = None
+        values_special = None
+        values = None
+
+        # use separate embedding for special relative_positions (>= RELATIVE_POSITION_SPECIAL_OFFSET)
+        # TODO: this is not efficient because all values are embedded twice!
+        if relative_attention_num_buckets_special > 0:
+            mask_special = relative_position >= T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET
+            rp_bucket_special = torch.where(mask_special,
+                                            relative_position - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
+                                            torch.zeros_like(relative_position))
+            if relative_attention_bias_special is not None:
+                values_special = relative_attention_bias_special(rp_bucket_special)
+            relative_position[mask_special] = 0
+
+        rp_bucket = T5Attention._relative_position_bucket(
+            relative_position,  # shape (qlen, klen) or (bsz, qlen, klen)
+            bidirectional=bidirectional,
+            num_buckets=relative_attention_num_buckets,
+        )
+        if relative_attention_bias is not None:
+            values = relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads) or (bsz, qlen, klen, num_heads)
+        if mask_special is not None:
+            if values_special is not None:
+                values = torch.where(mask_special.unsqueeze(-1), values_special, values)
+            rp_bucket = torch.where(mask_special,
+                                    rp_bucket_special + T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET, rp_bucket)
+
+        return rp_bucket, values
+
     def compute_bias(self, relative_position):
         """
         Compute binned relative position bias.
@@ -295,28 +331,14 @@ class T5Attention(nn.Module):
         Returns:
             a float Tensor of shape (bsz, num_heads, qlen, klen)
         """
-        mask_special = None
-        values_special = None
 
-        # use separate embedding for special relative_positions (>= RELATIVE_POSITION_SPECIAL_OFFSET)
-        # TODO: this is not efficient because all values are embedded twice!
-        if self.relative_attention_num_buckets_special > 0:
-            mask_special = relative_position >= T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET
-            rp_bucket_special = torch.where(mask_special,
-                                            relative_position - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
-                                            torch.zeros_like(relative_position))
-            values_special = self.relative_attention_bias_special(rp_bucket_special)
-            relative_position[mask_special] = 0
-
-        rp_bucket = self._relative_position_bucket(
-            relative_position,  # shape (qlen, klen) or (bsz, qlen, klen)
+        _, values = T5Attention._relative_position_bucket_with_special(
+            relative_position=relative_position,
+            relative_attention_num_buckets=self.relative_attention_num_buckets,
+            relative_attention_num_buckets_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
             bidirectional=not self.is_decoder,
-            num_buckets=self.relative_attention_num_buckets,
-        )
-
-        values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads) or (bsz, qlen, klen, num_heads)
-        if values_special is not None:
-            values = torch.where(mask_special.unsqueeze(-1), values_special, values)
+            relative_attention_bias=self.relative_attention_bias,
+            relative_attention_bias_special=self.relative_attention_bias_special)
 
         if len(values.size()) < 3:  # same relative_positions for all q and k positions (used for special cross-graph distance)
             assert len(values.size()) == 1 or values.size(0) == 1, f'expected a single embedding, but got {values.size(0)}'
@@ -987,19 +1009,89 @@ class T5WithLMHeadModel(T5PreTrainedModel):
         return decoder_outputs + encoder_outputs
 
 
+class MultiGoldCrossEntropyLoss(_WeightedLoss):
+    """
+    Calculates Cross Entropy loss regarding multiple correct label instances. Only the loss for instances with
+    minimal loss is considered. Instances where every label matches its ignore_index are omitted.
+    Expects list of logits (inputs), each of shape (bs, ..., dim) and list of labels (targets), each of shape (bs, instances, ...).
+    Works also for lists of logits and targets (loss is calculated between logits[i] and targets[i]).
+    Returns aggregation over minimal losses (per instance)
+    """
+    def __init__(self, weight=None, ignore_indices=-100, reduction='mean', weights=None):
+        super(MultiGoldCrossEntropyLoss, self).__init__(weight=weight, reduction=reduction)
+        self.ignore_indices = ignore_indices
+        if not isinstance(self.ignore_indices, (list, tuple)):
+            self.ignore_indices = (self.ignore_indices, )
+        self.weights = weights
+
+    def forward(self, inputs, targets):
+        if not isinstance(inputs,  (list, tuple)):
+            inputs = (inputs,)
+        if not isinstance(targets,  (list, tuple)):
+            targets = (targets,)
+        assert len(inputs) == len(targets), \
+            f'number of elements in inputs [{len(inputs)}] and targets [{len(targets)}] ' \
+            f'do not match'
+        all_losses = []
+        for i in range(len(inputs)):
+            input = inputs[i]       # shape (bs, ..., dims)
+            target = targets[i]     # shape (bs, instances, ...)
+            #bs = target.size(0)
+            n = target.size(1)
+            d = input.size(-1)
+            assert tuple(input.size())[1:-1] == tuple(target.size())[2:], \
+                'remaining dimensions of input and target must match'
+
+            not_exp_dims = [-1] * (len(input.size())-1)
+            # add and expand instance dim in input, then flat it
+            input_expanded = input.unsqueeze(1).expand(-1, n, *not_exp_dims)
+            current_losses = F.cross_entropy(input_expanded.reshape(-1, d),
+                                             target.reshape(-1), weight=self.weight,
+                                             ignore_index=self.ignore_indices[i], reduction='none').reshape(target.size())
+            # weight loss for individual input-target pairs
+            if self.weights is not None:
+                current_losses = current_losses * self.weights[i]
+            # set loss to infinite where all targets are ignored for one instance (caused by padding) because this
+            # would otherwise cause minimal possible loss (0)
+            mask_ignore = (target == self.ignore_indices[i])
+            # ignore only complete instances (aggregate up to instance level)
+            for _ in range(len(mask_ignore.size()) - 2):
+                mask_ignore, _ = mask_ignore.min(-1)
+            current_losses[mask_ignore] = float('inf')
+            all_losses.append(current_losses)
+
+        losses = torch.cat(all_losses, -1)
+
+        if self.reduction == 'mean':
+            losses = losses.mean(-1)
+            losses, _indices = losses.min(-1)
+            loss = losses.mean()
+        elif self.reduction == 'sum':
+            losses = losses.sum(-1)
+            losses, _indices = losses.min(-1)
+            loss = losses.sum()
+        elif self.reduction == 'none':
+            raise AttributeError(f'"none" not allowed as reduction function')
+        else:
+            raise NotImplementedError(f'unknown reduction function: {self.reduction}')
+
+        return loss
+
+
 @add_start_docstrings("""T5 Model with a `language modeling` head and a `relative position prediction` head on top. """,
                       T5_START_DOCSTRING, T5_INPUTS_DOCSTRING)
 class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
     r"""
-        **lm_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, sequence_length)``:
-            Labels for computing the masked language modeling loss.
+        **label_indices**: ``torch.LongTensor`` of shape ``(batch_size, ): indices of output
+            (decoding) tokens to calculate the lm_logits and relative positions for (one per instance / sequence!)
+        **lm_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, instance)``:
+            Labels for computing the masked language modeling loss for multiple correct instances at positions indexed
+            by ``label_indices``.
             Indices should be in ``[-1, 0, ..., config.vocab_size]`` (see ``input_ids`` docstring)
             Tokens with indices set to ``-1`` are ignored (masked), the loss is only computed for the tokens with labels
             in ``[0, ..., config.vocab_size]``
-        **relative_position_indices**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, ): indices of output
-            (decoding) tokens to calculate the relative positions for (one per instance / sequence!)
-        **relative_position_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, sequence_length, )``:
-            relative positions with respect to tokens indexed by ``relative_position_indices`` (required)
+        **relative_position_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, instance, sequence_length, )``:
+            relative positions with respect to tokens indexed by ``label_indices``
 
     Outputs: `Tuple` comprising various elements depending on the configuration (config) and inputs:
         **loss**: (`optional`, returned when ``lm_labels`` is provided) ``torch.FloatTensor`` of shape ``(1,)``:
@@ -1026,9 +1118,9 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
-        config.relative_attention_num_buckets_special = 2   # for "infinite" and "unknown" relative_position
         config.relative_position_hidden_states_dim = 100
 
+        self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.model_dim = config.d_model
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -1048,10 +1140,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                               bias=False)
         self.decoder_relative_position_projection = nn.Linear(config.d_model,
                                                               config.relative_position_hidden_states_dim, bias=False)
+        self.new_relative_postion_projection = nn.Linear(config.d_model,
+                                                         config.relative_position_hidden_states_dim, bias=False)
 
         self.relative_position_head = nn.Linear(config.relative_position_hidden_states_dim * 3,
                                                 config.relative_attention_num_buckets
-                                                + config.relative_attention_num_buckets_special,
+                                                + T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
                                                 bias=False)
 
         self.init_weights()
@@ -1077,7 +1171,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
-        decoder_relative_position_indices = kwargs.pop("decoder_relative_position_indices", None)
+        decoder_label_indices = kwargs.pop("decoder_label_indices", None)
 
 
         kwargs_common = dict(
@@ -1100,9 +1194,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
             encoder_outputs = self.encoder(hidden_states, **kwargs_encoder)
             encoder_hidden_states = encoder_outputs[0]
-            encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states)
         else:
             encoder_outputs = ()
+
+        if encoder_relative_position_hidden_states is None:
+            encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states)
+            encoder_outputs = encoder_outputs + (encoder_relative_position_hidden_states,)
 
         # Decode
         # Convert decoder inputs in embeddings if needed
@@ -1118,74 +1215,89 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         #if encoder_decoder_relative_position is not None:
         kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position #.transpose(-2,-1)
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
+        decoder_hidden_states = decoder_outputs[0] # shape (bs, sl, dim)
 
-        decoder_relative_position_hiddens_states = self.decoder_relative_position_projection(encoder_hidden_states)
+        def gather_from_sequence(t, idx):
+            #t_dims = list(t.size())
+            #idx_dims = list(idx.size())
+            return t.gather(1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, t.size(-1))).squeeze(1)
 
-        sequence_output = decoder_outputs[0]
+        new_decoder_hidden_state = gather_from_sequence(decoder_hidden_states, decoder_label_indices)
         # Rescale output before projecting on vocab
         # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
-        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        sequence_output = new_decoder_hidden_state * (self.model_dim ** -0.5)
         lm_logits = self.lm_head(sequence_output)
 
-        losses = []
-        decoder_outputs = (lm_logits,) + decoder_outputs[1:]  # Add hidden states and attention if they are here
-        if lm_labels is not None:
-            shift_logits = lm_logits[..., :-1, :].contiguous()
-            shift_labels = lm_labels[..., 1:].contiguous()
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-            #decoder_outputs = (
-            #    loss,
-            #) + decoder_outputs  # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
-            losses.append(loss)
+        losses = ()
+        #decoder_outputs = (lm_logits,) + decoder_outputs #[1:]  # Add hidden states and attention if they are here
+        #if lm_labels is not None:
+        #    #shift_logits = lm_logits[..., :-1, :].contiguous()
+        #    #shift_labels = lm_labels[..., 1:].contiguous()
+        #    loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100,))
+        #    loss = loss_fct(lm_logits, lm_labels)
+        #    #decoder_outputs = (
+        #    #    loss,
+        #    #) + decoder_outputs  # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+        #    losses = losses + (loss,)
 
-        if encoder_relative_position_hidden_states is not None:
-            relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
-                                                          decoder_relative_position_hiddens_states), dim=1)
-        else:
-            relative_position_hidden_states = decoder_relative_position_hiddens_states
+        decoder_relative_position_hidden_states = self.decoder_relative_position_projection(decoder_hidden_states)
+        decoder_outputs = decoder_outputs + (decoder_relative_position_hidden_states,)
+
+        new_decoder_relative_position_hidden_state = self.new_relative_postion_projection(new_decoder_hidden_state)
+
+        #if encoder_relative_position_hidden_states is not None:
+        relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
+                                                      decoder_relative_position_hidden_states), dim=1)
+
+        #else:
+        #    relative_position_hidden_states = decoder_relative_position_hidden_states
 
         if decoder_relative_position_labels is not None:
-            assert decoder_relative_position_indices is not None, \
-                'argument decoder_relative_position_indices is missing, but required when decoder_relative_position_labels is given'
+            assert decoder_label_indices is not None, \
+                'argument decoder_relative_position_indices is missing, but required when decoder_relative_' \
+                'position_labels is given'
 
-        relative_position_logits = None
-        if decoder_relative_position_indices is not None:
-            # get relative_position_hidden_states for indexed tokens
-            selected_decoder_relative_position_hidden_states = decoder_relative_position_hiddens_states.gather(-2, decoder_relative_position_indices)  # shape (bsz, 1, projection_size)
-            # multiply with each entry in relative_position_hidden_states
-            prod = selected_decoder_relative_position_hidden_states * relative_position_hidden_states
-            # finally, project with self.relative_position_head
-            # TODO: test using only prod
-            relative_position_logits = self.relative_position_head(torch.cat([prod,
-                                                                              selected_decoder_relative_position_hidden_states,
-                                                                              relative_position_hidden_states], dim=-1))
-            decoder_outputs = decoder_outputs \
-                              + (relative_position_hidden_states[:, -decoder_relative_position_hiddens_states.size(1):], )
-            if encoder_relative_position_hidden_states is not None:
-                encoder_outputs = encoder_outputs \
-                                  + (relative_position_hidden_states[:, :encoder_relative_position_hidden_states.size(1)], )
+        #relative_position_logits = None
+        #if decoder_label_indices is not None:
+        # get relative_position_hidden_states for indexed tokens
+        #selected_decoder_relative_position_hidden_states = decoder_relative_position_hidden_states.gather(1, decoder_label_indices.expand_as(decoder_relative_position_hidden_states))  # shape (bsz, 1, projection_size)
+        # multiply with each entry in relative_position_hidden_states
+        new_decoder_relative_position_hidden_state_expanded = new_decoder_relative_position_hidden_state.unsqueeze(1).expand_as(relative_position_hidden_states)
+        prod = new_decoder_relative_position_hidden_state_expanded * relative_position_hidden_states
+        # finally, project with self.relative_position_head
+        # TODO: test using only product
+        relative_position_logits = self.relative_position_head(torch.cat([prod,
+                                                                          new_decoder_relative_position_hidden_state_expanded,
+                                                                          relative_position_hidden_states], dim=-1))
 
         relative_position_labels = decoder_relative_position_labels
-        # prepend encoder-to-decoder labels
-        if encoder_decoder_relative_position_labels is not None:
-            assert decoder_relative_position_labels is not None, \
-                'decoder_relative_position_labels is required if encoder_decoder_relative_position_labels is given'
-            relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
-                                                  relative_position_labels), dim=1)
-        else:
-            # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
-            relative_position_logits = relative_position_logits[:, -relative_position_labels.size(1):]
 
-        # TODO: calculate CrossEntropyLoss with respect to _all_ target relative_distance rows (+token predictions),
-        # but return only best (minimal) loss (currently, we expect _one_ correct relative_distance-row as
-        # relative_position_labels)
-        if relative_position_labels is not None:
-            # TODO: is shifting correct here?
-            shift_logits = relative_position_logits[..., :-1, :].contiguous()
-            shift_labels = relative_position_labels[..., 1:].contiguous()
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        if relative_position_labels is not None and lm_labels is not None:
+            # prepend encoder-to-decoder labels
+            if encoder_decoder_relative_position_labels is not None:
+                assert decoder_relative_position_labels is not None, \
+                    'decoder_relative_position_labels is required if encoder_decoder_relative_position_labels is given'
+                relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
+                                                      relative_position_labels), dim=1)
+            else:
+                # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
+                relative_position_logits = relative_position_logits[:, -relative_position_labels.size(1):]
+
+            # convert to buckets
+            relative_position_labels_buckets, _ = T5Attention._relative_position_bucket_with_special(
+                relative_position=relative_position_labels,
+                relative_attention_num_buckets=self.relative_attention_num_buckets,
+                relative_attention_num_buckets_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
+                bidirectional=True)
+
+            # language modeling and relative position loss calculation with multiple correct labels have to be
+            # calculated together
+            loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100, T5Attention.RELATIVE_POSITION_PAD))
+            loss = loss_fct(inputs=(lm_logits, relative_position_logits),
+                            targets=(lm_labels, relative_position_labels_buckets))
+
             losses.append(loss)
 
-        return losses + decoder_outputs + encoder_outputs
+        # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
+        # (reverse T5Attention._relative_position_bucket_with_special)
+        return losses + (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
