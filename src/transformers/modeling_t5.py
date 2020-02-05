@@ -34,7 +34,7 @@ from .modeling_utils import PreTrainedModel, prune_linear_layer
 
 logger = logging.getLogger(__name__)
 
-ENSURE_DEFAULT_RELATIVE_POSITION = True
+ENSURE_DEFAULT_RELATIVE_POSITION = False
 
 ####################################################
 # This dict contrains shortcut names and associated url
@@ -316,8 +316,7 @@ class T5Attention(nn.Module):
         if mask_special is not None:
             if values_special is not None:
                 values = torch.where(mask_special.unsqueeze(-1), values_special, values)
-            rp_bucket = torch.where(mask_special,
-                                    rp_bucket_special + T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET, rp_bucket)
+            rp_bucket = torch.where(mask_special, rp_bucket_special, rp_bucket)
 
         return rp_bucket, values
 
@@ -1234,7 +1233,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         def gather_from_sequence(t, idx):
             #t_dims = list(t.size())
             #idx_dims = list(idx.size())
-            return t.gather(1, idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, t.size(-1))).squeeze(1)
+            _idx = idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, t.size(-1))
+            return t.gather(1, _idx).squeeze(1)
 
         new_decoder_hidden_state = gather_from_sequence(decoder_hidden_states, decoder_label_indices)
         # Rescale output before projecting on vocab
@@ -1292,10 +1292,10 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                 assert decoder_relative_position_labels is not None, \
                     'decoder_relative_position_labels is required if encoder_decoder_relative_position_labels is given'
                 relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
-                                                      relative_position_labels), dim=1)
+                                                      relative_position_labels), dim=-1)
             else:
                 # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
-                relative_position_logits = relative_position_logits[:, -relative_position_labels.size(1):]
+                relative_position_logits = relative_position_logits[:, -relative_position_labels.size(-1):]
 
             # convert to buckets
             relative_position_labels_buckets, _ = T5Attention._relative_position_bucket_with_special(
