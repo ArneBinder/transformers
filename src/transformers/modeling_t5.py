@@ -1014,7 +1014,7 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
     minimal loss is considered. Instances where every label matches its ignore_index are omitted.
     Expects list of logits (inputs), each of shape (bs, ..., dim) and list of labels (targets), each of shape (bs, instances, ...).
     Works also for lists of logits and targets (loss is calculated between logits[i] and targets[i]).
-    Returns aggregation over minimal losses (per instance)
+    Returns list of aggregated minimal losses (one loss value for each entry in inputs / targets)
     """
     def __init__(self, weight=None, ignore_indices=-100, reduction='mean', weights=None):
         super(MultiGoldCrossEntropyLoss, self).__init__(weight=weight, reduction=reduction)
@@ -1053,7 +1053,7 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
             # set loss to infinite where all targets are ignored for one instance (caused by padding) because this
             # would otherwise cause minimal possible loss (0)
             mask_ignore = (target == self.ignore_indices[i])
-            # ignore only complete instances (aggregate up to instance level)
+            # ignore only complete gold instances (aggregate up to _gold_ instance level != instance lavel)
             for _ in range(len(mask_ignore.size()) - 2):
                 mask_ignore, _ = mask_ignore.min(-1)
             current_losses[mask_ignore] = float('inf')
@@ -1061,20 +1061,31 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
 
         losses = torch.cat(all_losses, -1)
 
+        losses_reduced = []
         if self.reduction == 'mean':
             losses = losses.mean(-1)
             losses, _indices = losses.min(-1)
-            loss = losses.mean()
+            for l in all_losses:
+                # TODO: allows only one intermediate dim (i.e. sequence data)
+                _indices_expanded = _indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
+                current_losses = l.gather(dim=1, index=_indices_expanded)
+                losses_reduced.append(current_losses.mean())
+            #loss = losses.mean()
         elif self.reduction == 'sum':
             losses = losses.sum(-1)
             losses, _indices = losses.min(-1)
-            loss = losses.sum()
+            for l in all_losses:
+                # TODO: allows only one intermediate dim (i.e. sequence data)
+                _indices_expanded = _indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
+                current_losses = l.gather(dim=1, index=_indices_expanded)
+                losses_reduced.append(current_losses.sum())
+            #loss = losses.sum()
         elif self.reduction == 'none':
             raise AttributeError(f'"none" not allowed as reduction function')
         else:
             raise NotImplementedError(f'unknown reduction function: {self.reduction}')
 
-        return loss
+        return losses_reduced
 
 
 @add_start_docstrings("""T5 Model with a `language modeling` head and a `relative position prediction` head on top. """,
@@ -1242,7 +1253,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         sequence_output = new_decoder_hidden_state * (self.model_dim ** -0.5)
         lm_logits = self.lm_head(sequence_output)
 
-        losses = ()
+        losses = []
         #decoder_outputs = (lm_logits,) + decoder_outputs #[1:]  # Add hidden states and attention if they are here
         #if lm_labels is not None:
         #    #shift_logits = lm_logits[..., :-1, :].contiguous()
@@ -1307,11 +1318,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # language modeling and relative position loss calculation with multiple correct labels have to be
             # calculated together
             loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100, T5Attention.RELATIVE_POSITION_PAD))
-            loss = loss_fct(inputs=(lm_logits, relative_position_logits),
-                            targets=(lm_labels, relative_position_labels_buckets))
-
-            losses.append(loss)
+            loss = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
+                            targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
+            # append lm and distance loss
+            losses.extend(loss)
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
         # (reverse T5Attention._relative_position_bucket_with_special)
-        return losses + (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
+        return tuple(losses) + (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
