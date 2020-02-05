@@ -1253,7 +1253,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         sequence_output = new_decoder_hidden_state * (self.model_dim ** -0.5)
         lm_logits = self.lm_head(sequence_output)
 
-        losses = []
+        #losses = []
         #decoder_outputs = (lm_logits,) + decoder_outputs #[1:]  # Add hidden states and attention if they are here
         #if lm_labels is not None:
         #    #shift_logits = lm_logits[..., :-1, :].contiguous()
@@ -1295,8 +1295,16 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                                           new_decoder_relative_position_hidden_state_expanded,
                                                                           relative_position_hidden_states], dim=-1))
 
-        relative_position_labels = decoder_relative_position_labels
+        outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
+        if 'return_indices' in kwargs:
+            _, decoder_lm_predictions = lm_logits.max(-1)
+            _, indices_rp = relative_position_logits.max(-1)
+            # TODO: shift back to relative positions and special rp
+            # TODO: slice indices_rp_shifted = (encoder_decoder_relative_position_indices, decoder_relative_position_indices) along dim=-1
+            raise NotImplementedError('return_indices not yet implemented for relateive_position')
+
+        relative_position_labels = decoder_relative_position_labels
         if relative_position_labels is not None and lm_labels is not None:
             # prepend encoder-to-decoder labels
             if encoder_decoder_relative_position_labels is not None:
@@ -1318,11 +1326,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # language modeling and relative position loss calculation with multiple correct labels have to be
             # calculated together
             loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100, T5Attention.RELATIVE_POSITION_PAD))
-            loss = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
+            losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                             targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
-            # append lm and distance loss
-            losses.extend(loss)
+            # prepend lm and distance loss
+            outputs = tuple(loss) + outputs
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
         # (reverse T5Attention._relative_position_bucket_with_special)
-        return tuple(losses) + (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
+        return outputs
