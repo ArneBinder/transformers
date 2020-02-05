@@ -1116,6 +1116,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     """
 
+    ARGS_TRAIN = ["encoder_input_ids", "decoder_input_ids", "encoder_attention_mask", "decoder_attention_mask",
+                  "encoder_relative_position", "decoder_relative_position", "encoder_decoder_relative_position",
+                  "decoder_label_indices", "decoder_lm_labels", "decoder_relative_position_labels",
+                  "encoder_decoder_relative_position_labels"]
+
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
         config.relative_position_hidden_states_dim = 100
@@ -1149,6 +1154,15 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                 bias=False)
 
         self.init_weights()
+
+    @staticmethod
+    def args_train_encoder():
+        return [arg for arg in T5WithLMAndRPPHeadModel.ARGS_TRAIN
+                if not (arg.startswith('decoder_') or arg.startswith('encoder_decoder_'))]
+
+    @staticmethod
+    def args_train_decoder():
+        return [arg for arg in T5WithLMAndRPPHeadModel.ARGS_TRAIN if arg not in T5WithLMAndRPPHeadModel.args_train_encoder()]
 
     def get_input_embeddings(self):
         return self.shared
