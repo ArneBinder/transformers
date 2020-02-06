@@ -307,21 +307,31 @@ class T5Attention(nn.Module):
         relative_position = relative_position_buckets
         if bidirectional:
             num_buckets //= 2
-            is_neg = relative_position_buckets >= num_buckets
-            relative_position[is_neg] -= num_buckets
+            is_neg = relative_position_buckets < num_buckets
+            #relative_position[~is_neg] -= num_buckets
+            relative_position = torch.where(is_neg, relative_position, relative_position - num_buckets)
         else:
-            is_neg = torch.zeros_like(relative_position_buckets, dtype=torch.bool)
+            raise NotImplementedError('_relative_position_bucket_to_indices is nto implemented for bidirectional=False')
+            is_neg = torch.zeros_like(relative_position_buckets, dtype=torch.bool) # this is wrong
 
         # values are now in [0, num_buckets]
+
+        is_max = relative_position == (num_buckets - 1)
 
         # half of the buckets are for exact increments in positions
         max_exact = num_buckets // 2
         is_small = relative_position_buckets < max_exact
 
-        # set to lowest log scaled value (TODO: remove HACK and set correct values)
-        relative_position[~is_small] = max_exact
+        is_log_scaled = ~(is_small | is_max)
+        # set to lowest log scaled value max_exact TODO: remove this HACK and set correct values
+        #relative_position[is_log_scaled] = max_exact
+        relative_position = torch.where(is_log_scaled, torch.ones_like(relative_position) * max_exact, relative_position)
 
-        relative_position[is_neg] *= -1
+        # relative_position[is_max] = max_distance
+        relative_position = torch.where(is_max, torch.ones_like(relative_position) * max_distance, relative_position)
+
+        #relative_position[is_neg] *= -1
+        relative_position = torch.where(is_neg, -relative_position, relative_position)
 
         return relative_position
 
@@ -340,7 +350,8 @@ class T5Attention(nn.Module):
                                             relative_position
                                             - relative_position_special_offset + relative_attention_num_buckets,
                                             torch.zeros_like(relative_position))
-            relative_position[mask_special] = 0
+            #relative_position[mask_special] = 0
+            relative_position = torch.where(mask_special, torch.zeros_like(relative_position), relative_position)
         else:
             mask_special = None
             rp_bucket_special = None
@@ -1372,8 +1383,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
         if return_labels:
-            _, lm_predictions = lm_logits.max(-1)
-            _, rp_indices = relative_position_logits.max(-1)
+            _, lm_predictions = lm_logits.detach().max(-1)
+            _, rp_indices = relative_position_logits.detach().max(-1)
             # shift relative position bucket indices back to relative positions and special indices
             rp_predictions = T5Attention._relative_position_bucket_with_special_to_indices(
                 relative_position_buckets=rp_indices,
