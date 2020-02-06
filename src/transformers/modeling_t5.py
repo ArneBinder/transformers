@@ -228,11 +228,9 @@ class T5Attention(nn.Module):
                 self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets + self.relative_attention_num_buckets_special, self.n_heads)
                 self.relative_attention_bias.to(old_embeddings.weight.device)
                 # taken from self._init_weights(new_embeddings)
-                # TODO: check d_model and initializer_factor parameters!
                 self.relative_attention_bias.weight.data.normal_(mean=0.0, std=self.initializer_factor * ((self.d_model) ** -0.5))
                 # Copy word embeddings from the previous weights
-                num_tokens_to_copy = min(old_num_tokens, self.relative_attention_num_buckets + self.relative_attention_num_buckets_special)
-                self.relative_attention_bias.weight.data[:num_tokens_to_copy, :] = old_embeddings.weight.data[:num_tokens_to_copy, :]
+                self.relative_attention_bias.weight.data[:old_num_tokens, :] = old_embeddings.weight.data[:old_num_tokens, :]
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -309,15 +307,14 @@ class T5Attention(nn.Module):
                                                ):
         mask_special = None
 
-        # use separate embedding for special relative_positions (>= RELATIVE_POSITION_SPECIAL_OFFSET)
-        # TODO: this is not efficient because all values are embedded twice!
         if relative_attention_num_buckets_special > 0:
-            relative_position_special_offset is not None, \
+            assert relative_position_special_offset is not None, \
             f'relative_attention_num_buckets_special > 0 [{relative_attention_num_buckets_special}], ' \
             f'but missing relative_position_special_offset'
             mask_special = relative_position >= relative_position_special_offset
             rp_bucket_special = torch.where(mask_special,
-                                            relative_position - relative_position_special_offset+ relative_attention_num_buckets,
+                                            relative_position
+                                            - relative_position_special_offset + relative_attention_num_buckets,
                                             torch.zeros_like(relative_position))
             relative_position[mask_special] = 0
 
@@ -1358,7 +1355,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # calculated together
             loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100, T5Attention.RELATIVE_POSITION_PAD))
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
-                            targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
+                              targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
             # prepend lm and distance loss
             outputs = tuple(losses) + outputs
 
