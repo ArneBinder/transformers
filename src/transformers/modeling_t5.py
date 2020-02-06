@@ -301,11 +301,15 @@ class T5Attention(nn.Module):
         return ret
 
     @staticmethod
+    def _relative_position_bucket_to_indices(relative_position_buckets, relative_attention_num_buckets, bidirectional):
+        raise NotImplementedError()
+        return None
+
+    @staticmethod
     def _relative_position_bucket_with_special(relative_position, relative_attention_num_buckets,
                                                relative_attention_num_buckets_special, bidirectional,
                                                relative_position_special_offset=None
                                                ):
-        mask_special = None
 
         if relative_attention_num_buckets_special > 0:
             assert relative_position_special_offset is not None, \
@@ -317,6 +321,9 @@ class T5Attention(nn.Module):
                                             - relative_position_special_offset + relative_attention_num_buckets,
                                             torch.zeros_like(relative_position))
             relative_position[mask_special] = 0
+        else:
+            mask_special = None
+            rp_bucket_special = None
 
         rp_bucket = T5Attention._relative_position_bucket(
             relative_position,  # shape (qlen, klen) or (bsz, qlen, klen)
@@ -328,6 +335,35 @@ class T5Attention(nn.Module):
             rp_bucket = torch.where(mask_special, rp_bucket_special, rp_bucket)
 
         return rp_bucket
+
+    @staticmethod
+    def _relative_position_bucket_with_special_to_indices(relative_position_buckets, relative_attention_num_buckets,
+                                                          relative_attention_num_buckets_special, bidirectional,
+                                                          relative_position_special_offset=None):
+
+        if relative_attention_num_buckets_special > 0:
+            assert relative_position_special_offset is not None, \
+            f'relative_attention_num_buckets_special > 0 [{relative_attention_num_buckets_special}], ' \
+            f'but missing relative_position_special_offset'
+            mask_special = relative_position_buckets >= relative_attention_num_buckets
+            rp_indices_special = torch.where(mask_special,
+                                             relative_position_buckets
+                                             - relative_attention_num_buckets + relative_position_special_offset,
+                                             torch.zeros_like(relative_position_buckets))
+            relative_position_buckets[mask_special] = 0
+        else:
+            mask_special = None
+            rp_indices_special = None
+
+        rp_indices = T5Attention._relative_position_bucket_to_indices(
+            relative_position_buckets=relative_position_buckets,
+            relative_attention_num_buckets=relative_attention_num_buckets,
+            bidirectional=bidirectional
+        )
+        if mask_special is not None:
+            rp_indices = torch.where(mask_special, rp_indices_special, rp_indices)
+
+        return rp_indices
 
     def compute_bias(self, relative_position):
         """
@@ -1267,6 +1303,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position #.transpose(-2,-1)
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
         decoder_hidden_states = decoder_outputs[0] # shape (bs, sl, dim)
+        len_decoder_seq = decoder_hidden_states.size(1)
 
         def gather_from_sequence(t, idx):
             #t_dims = list(t.size())
@@ -1324,12 +1361,24 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
-        if 'return_indices' in kwargs:
+        if 'return_labels' in kwargs:
             _, decoder_lm_predictions = lm_logits.max(-1)
             _, indices_rp = relative_position_logits.max(-1)
-            # TODO: shift back to relative positions and special rp
-            # TODO: slice indices_rp_shifted = (encoder_decoder_relative_position_indices, decoder_relative_position_indices) along dim=-1
-            raise NotImplementedError('return_indices not yet implemented for relateive_position')
+            # shift relative position bucket indices back to relative positions and special indices
+            rp_predictions = T5Attention._relative_position_bucket_with_special_to_indices(
+                relative_position_buckets=indices_rp,
+                relative_attention_num_buckets=self.relative_attention_num_buckets,
+                relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
+                relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
+                bidirectional=True
+            )
+            # slice indices to (encoder_decoder_relative_position_indices, decoder_relative_position_indices)
+            # along dim=1
+            encoder_decoder_relative_position_indices = rp_predictions[:, :-len_decoder_seq]
+            decoder_relative_position_indices = rp_predictions[:, -len_decoder_seq:]
+            # prepend to outputs
+            outputs = (decoder_lm_predictions, decoder_relative_position_indices,
+                       encoder_decoder_relative_position_indices) + outputs
 
         relative_position_labels = decoder_relative_position_labels
         if relative_position_labels is not None and lm_labels is not None:
