@@ -301,9 +301,29 @@ class T5Attention(nn.Module):
         return ret
 
     @staticmethod
-    def _relative_position_bucket_to_indices(relative_position_buckets, relative_attention_num_buckets, bidirectional):
-        raise NotImplementedError()
-        return None
+    def _relative_position_bucket_to_indices(relative_position_buckets, num_buckets, bidirectional,
+                                             max_distance=128):
+
+        relative_position = relative_position_buckets
+        if bidirectional:
+            num_buckets //= 2
+            is_neg = relative_position_buckets >= num_buckets
+            relative_position[is_neg] -= num_buckets
+        else:
+            is_neg = torch.zeros_like(relative_position_buckets, dtype=torch.bool)
+
+        # values are now in [0, num_buckets]
+
+        # half of the buckets are for exact increments in positions
+        max_exact = num_buckets // 2
+        is_small = relative_position_buckets < max_exact
+
+        # set to lowest log scaled value (TODO: remove HACK and set correct values)
+        relative_position[~is_small] = max_exact
+
+        relative_position[is_neg] *= -1
+
+        return relative_position
 
     @staticmethod
     def _relative_position_bucket_with_special(relative_position, relative_attention_num_buckets,
@@ -357,7 +377,7 @@ class T5Attention(nn.Module):
 
         rp_indices = T5Attention._relative_position_bucket_to_indices(
             relative_position_buckets=relative_position_buckets,
-            relative_attention_num_buckets=relative_attention_num_buckets,
+            num_buckets=relative_attention_num_buckets,
             bidirectional=bidirectional
         )
         if mask_special is not None:
