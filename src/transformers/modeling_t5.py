@@ -1276,6 +1276,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         encoder_decoder_relative_position = kwargs.pop("encoder_decoder_relative_position", None)
 
         lm_labels = kwargs.pop("decoder_lm_labels", None)
+        return_labels = kwargs.pop('return_labels', False)
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
@@ -1370,12 +1371,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
-        if kwargs.get('return_labels', False):
-            _, decoder_lm_predictions = lm_logits.max(-1)
-            _, indices_rp = relative_position_logits.max(-1)
+        if return_labels:
+            _, lm_predictions = lm_logits.max(-1)
+            _, rp_indices = relative_position_logits.max(-1)
             # shift relative position bucket indices back to relative positions and special indices
             rp_predictions = T5Attention._relative_position_bucket_with_special_to_indices(
-                relative_position_buckets=indices_rp,
+                relative_position_buckets=rp_indices,
                 relative_attention_num_buckets=self.relative_attention_num_buckets,
                 relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
                 relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
@@ -1383,11 +1384,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             )
             # slice indices to (encoder_decoder_relative_position_indices, decoder_relative_position_indices)
             # along dim=1
-            encoder_decoder_relative_position_indices = rp_predictions[:, :-len_decoder_seq]
-            decoder_relative_position_indices = rp_predictions[:, -len_decoder_seq:]
+            encoder_decoder_relative_position_predictions = rp_predictions[:, :-len_decoder_seq]
+            decoder_relative_position_predictions = rp_predictions[:, -len_decoder_seq:]
             # prepend to outputs
-            outputs = (decoder_lm_predictions, decoder_relative_position_indices,
-                       encoder_decoder_relative_position_indices) + outputs
+            outputs = (lm_predictions, decoder_relative_position_predictions,
+                       encoder_decoder_relative_position_predictions) + outputs
 
         relative_position_labels = decoder_relative_position_labels
         if relative_position_labels is not None and lm_labels is not None:
