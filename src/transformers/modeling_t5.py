@@ -1260,7 +1260,6 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
         decoder_label_indices = kwargs.pop("decoder_label_indices", None)
 
-
         kwargs_common = dict(
             (k, v) for k, v in kwargs.items() if not k.startswith("encoder_") and not k.startswith("decoder_")
         )
@@ -1297,17 +1296,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         kwargs_decoder["encoder_hidden_states"] = encoder_hidden_states
         kwargs_decoder["encoder_attention_mask"] = kwargs_encoder.get("attention_mask", None)
-        # decoder expects relative positions across stacks from its perspective, but encoder_decoder_relative_position
-        # contains relative positions from the perspective of the encoder, so we transpose
-        #if encoder_decoder_relative_position is not None:
-        kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position #.transpose(-2,-1)
+        kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
         decoder_hidden_states = decoder_outputs[0] # shape (bs, sl, dim)
         len_decoder_seq = decoder_hidden_states.size(1)
 
         def gather_from_sequence(t, idx):
-            #t_dims = list(t.size())
-            #idx_dims = list(idx.size())
             _idx = idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, t.size(-1))
             return t.gather(1, _idx).squeeze(1)
 
@@ -1334,30 +1328,24 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         new_decoder_relative_position_hidden_state = self.new_relative_postion_projection(new_decoder_hidden_state)
 
-        #if encoder_relative_position_hidden_states is not None:
         relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
-                                                      decoder_relative_position_hidden_states), dim=1)
-
-        #else:
-        #    relative_position_hidden_states = decoder_relative_position_hidden_states
+                                                     decoder_relative_position_hidden_states), dim=1)
 
         if decoder_relative_position_labels is not None:
             assert decoder_label_indices is not None, \
                 'argument decoder_relative_position_indices is missing, but required when decoder_relative_' \
                 'position_labels is given'
 
-        #relative_position_logits = None
-        #if decoder_label_indices is not None:
-        # get relative_position_hidden_states for indexed tokens
-        #selected_decoder_relative_position_hidden_states = decoder_relative_position_hidden_states.gather(1, decoder_label_indices.expand_as(decoder_relative_position_hidden_states))  # shape (bsz, 1, projection_size)
         # multiply with each entry in relative_position_hidden_states
         new_decoder_relative_position_hidden_state_expanded = new_decoder_relative_position_hidden_state.unsqueeze(1).expand_as(relative_position_hidden_states)
         prod = new_decoder_relative_position_hidden_state_expanded * relative_position_hidden_states
         # finally, project with self.relative_position_head
         # TODO: test using only product
-        relative_position_logits = self.relative_position_head(torch.cat([prod,
-                                                                          new_decoder_relative_position_hidden_state_expanded,
-                                                                          relative_position_hidden_states], dim=-1))
+        relative_position_logits = self.relative_position_head(
+            torch.cat([prod,
+                       new_decoder_relative_position_hidden_state_expanded,
+                       relative_position_hidden_states],
+                      dim=-1))
 
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
@@ -1390,7 +1378,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                       relative_position_labels), dim=-1)
             else:
                 # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
-                relative_position_logits = relative_position_logits[:, -relative_position_labels.size(-1):]
+                relative_position_logits = relative_position_logits[:, len_decoder_seq:]
 
             # convert to buckets
             relative_position_labels_buckets = T5Attention._relative_position_bucket_with_special(
@@ -1398,7 +1386,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                 relative_attention_num_buckets=self.relative_attention_num_buckets,
                 relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
                 relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
-                bidirectional=True)
+                bidirectional=True
+            )
 
             # language modeling and relative position loss calculation with multiple correct labels have to be
             # calculated together
