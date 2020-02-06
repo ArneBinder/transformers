@@ -325,7 +325,10 @@ class T5Attention(nn.Module):
         is_log_scaled = ~(is_small | is_max)
         # set to lowest log scaled value max_exact TODO: remove this HACK and set correct values
         #relative_position[is_log_scaled] = max_exact
-        relative_position = torch.where(is_log_scaled, torch.ones_like(relative_position) * max_exact, relative_position)
+        #relative_position = torch.where(is_log_scaled, torch.ones_like(relative_position) * max_exact, relative_position)
+        # closest possible approximation
+        relative_position_normalized = (relative_position - max_exact).float() * (math.log(max_distance / max_exact) / (num_buckets - max_exact)) + math.log(max_exact)
+        relative_position = torch.where(is_log_scaled, torch.exp(relative_position_normalized).to(torch.long), relative_position)
 
         # relative_position[is_max] = max_distance
         relative_position = torch.where(is_max, torch.ones_like(relative_position) * max_distance, relative_position)
