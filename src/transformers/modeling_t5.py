@@ -200,12 +200,13 @@ class T5Attention(nn.Module):
 
         self.output_attentions = config.output_attentions
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
-        #self.relative_attention_num_buckets_special = T5Attention.RELATIVE_POSITION_NUM_BUCKETS #config.relative_attention_num_buckets_special
+        self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
         self.d_model = config.d_model
         self.d_kv = config.d_kv
         self.n_heads = config.num_heads
         self.dropout = config.dropout_rate
         self.inner_dim = self.n_heads * self.d_kv
+        self.initializer_factor = config.initializer_factor
 
         # Mesh TensorFlow initialization to avoid scaling before softmax
         self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -214,10 +215,24 @@ class T5Attention(nn.Module):
         self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
 
         if self.has_relative_attention_bias:
-            self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
-            self.relative_attention_bias_special = nn.Embedding(T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
-                                                                self.n_heads)
+            self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets + self.relative_attention_num_buckets_special, self.n_heads)
         self.pruned_heads = set()
+
+    def add_relative_attention_bias_special_embeddings(self, num_special):
+        if self.has_relative_attention_bias:
+            if self.relative_attention_num_buckets_special == 0:
+                self.relative_attention_num_buckets_special = num_special
+            if self.relative_attention_bias.num_embeddings < self.relative_attention_num_buckets + self.relative_attention_num_buckets_special:
+                old_embeddings = self.relative_attention_bias
+                old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
+                self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets + self.relative_attention_num_buckets_special, self.n_heads)
+                self.relative_attention_bias.to(old_embeddings.weight.device)
+                # taken from self._init_weights(new_embeddings)
+                # TODO: check d_model and initializer_factor parameters!
+                self.relative_attention_bias.weight.data.normal_(mean=0.0, std=self.initializer_factor * ((self.d_model) ** -0.5))
+                # Copy word embeddings from the previous weights
+                num_tokens_to_copy = min(old_num_tokens, self.relative_attention_num_buckets + self.relative_attention_num_buckets_special)
+                self.relative_attention_bias.weight.data[:num_tokens_to_copy, :] = old_embeddings.weight.data[:num_tokens_to_copy, :]
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -290,20 +305,20 @@ class T5Attention(nn.Module):
     @staticmethod
     def _relative_position_bucket_with_special(relative_position, relative_attention_num_buckets,
                                                relative_attention_num_buckets_special, bidirectional,
-                                               relative_attention_bias=None, relative_attention_bias_special=None):
+                                               relative_position_special_offset=None
+                                               ):
         mask_special = None
-        values_special = None
-        values = None
 
         # use separate embedding for special relative_positions (>= RELATIVE_POSITION_SPECIAL_OFFSET)
         # TODO: this is not efficient because all values are embedded twice!
         if relative_attention_num_buckets_special > 0:
-            mask_special = relative_position >= T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET
+            relative_position_special_offset is not None, \
+            f'relative_attention_num_buckets_special > 0 [{relative_attention_num_buckets_special}], ' \
+            f'but missing relative_position_special_offset'
+            mask_special = relative_position >= relative_position_special_offset
             rp_bucket_special = torch.where(mask_special,
-                                            relative_position - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
+                                            relative_position - relative_position_special_offset+ relative_attention_num_buckets,
                                             torch.zeros_like(relative_position))
-            if relative_attention_bias_special is not None:
-                values_special = relative_attention_bias_special(rp_bucket_special)
             relative_position[mask_special] = 0
 
         rp_bucket = T5Attention._relative_position_bucket(
@@ -311,14 +326,11 @@ class T5Attention(nn.Module):
             bidirectional=bidirectional,
             num_buckets=relative_attention_num_buckets,
         )
-        if relative_attention_bias is not None:
-            values = relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads) or (bsz, qlen, klen, num_heads)
+
         if mask_special is not None:
-            if values_special is not None:
-                values = torch.where(mask_special.unsqueeze(-1), values_special, values)
             rp_bucket = torch.where(mask_special, rp_bucket_special, rp_bucket)
 
-        return rp_bucket, values
+        return rp_bucket
 
     def compute_bias(self, relative_position):
         """
@@ -331,13 +343,15 @@ class T5Attention(nn.Module):
             a float Tensor of shape (bsz, num_heads, qlen, klen)
         """
 
-        _, values = T5Attention._relative_position_bucket_with_special(
+        rp_buckets = T5Attention._relative_position_bucket_with_special(
             relative_position=relative_position,
             relative_attention_num_buckets=self.relative_attention_num_buckets,
-            relative_attention_num_buckets_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
+            relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
+            relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
             bidirectional=not self.is_decoder,
-            relative_attention_bias=self.relative_attention_bias,
-            relative_attention_bias_special=self.relative_attention_bias_special)
+        )
+
+        values = self.relative_attention_bias(rp_buckets)
 
         if len(values.size()) < 3:  # same relative_positions for all q and k positions (used for special cross-graph distance)
             assert len(values.size()) == 1 or values.size(0) == 1, f'expected a single embedding, but got {values.size(0)}'
@@ -491,6 +505,11 @@ class T5Block(nn.Module):
         else:
             self.layer.append(T5LayerFF(config))
 
+    def add_relative_attention_bias_special_embeddings(self, num_special):
+        self.layer[0].SelfAttention.add_relative_attention_bias_special_embeddings(num_special)
+        if self.is_decoder:
+            self.layer[1].EncDecAttention.add_relative_attention_bias_special_embeddings(num_special)
+
     def forward(
         self,
         hidden_states,
@@ -599,6 +618,10 @@ class T5Stack(T5PreTrainedModel):
         self.dropout = nn.Dropout(config.dropout_rate)
 
         self.init_weights()
+
+    def add_relative_attention_bias_special_embeddings(self, num_special):
+        for b in self.block:
+            b.add_relative_attention_bias_special_embeddings(num_special)
 
     def forward(
         self,
@@ -824,6 +847,7 @@ class T5Model(T5PreTrainedModel):
         self.decoder = T5Stack(decoder_config)
 
         self.init_weights()
+
 
     def get_input_embeddings(self):
         return self.shared
@@ -1136,6 +1160,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         config.relative_position_hidden_states_dim = 100
 
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
+        self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
         self.model_dim = config.d_model
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -1164,6 +1189,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                 bias=False)
 
         self.init_weights()
+
+    def add_relative_attention_bias_special_embeddings(self, num_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL):
+        self.encoder.add_relative_attention_bias_special_embeddings(num_special)
+        self.decoder.add_relative_attention_bias_special_embeddings(num_special)
+        return num_special
 
     @staticmethod
     def args_train_encoder():
@@ -1317,10 +1347,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                 relative_position_logits = relative_position_logits[:, -relative_position_labels.size(-1):]
 
             # convert to buckets
-            relative_position_labels_buckets, _ = T5Attention._relative_position_bucket_with_special(
+            relative_position_labels_buckets = T5Attention._relative_position_bucket_with_special(
                 relative_position=relative_position_labels,
                 relative_attention_num_buckets=self.relative_attention_num_buckets,
-                relative_attention_num_buckets_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
+                relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
+                relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
                 bidirectional=True)
 
             # language modeling and relative position loss calculation with multiple correct labels have to be
@@ -1329,7 +1360,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                             targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
             # prepend lm and distance loss
-            outputs = tuple(loss) + outputs
+            outputs = tuple(losses) + outputs
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
         # (reverse T5Attention._relative_position_bucket_with_special)

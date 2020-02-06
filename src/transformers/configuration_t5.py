@@ -71,6 +71,9 @@ class T5Config(PretrainedConfig):
         num_layers=6,
         num_heads=8,
         relative_attention_num_buckets=32,
+        # Set default relative_attention_num_buckets_special to zero to allow loading from original T5 models.
+        # Use model.add_relative_attention_bias_special_embeddings() after .calling_from_pretrained()
+        relative_attention_num_buckets_special=0,
         dropout_rate=0.1,
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
@@ -85,6 +88,7 @@ class T5Config(PretrainedConfig):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.relative_attention_num_buckets = relative_attention_num_buckets
+        self.relative_attention_num_buckets_special = relative_attention_num_buckets_special
         self.dropout_rate = dropout_rate
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
