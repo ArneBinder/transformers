@@ -401,7 +401,8 @@ class T5Attention(nn.Module):
             relative_attention_num_buckets=self.relative_attention_num_buckets,
             relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
             relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
-            bidirectional=not self.is_decoder,
+            #bidirectional=not self.is_decoder,
+            bidirectional=True  # we allow looking forward in the decoder TODO: check!
         )
 
         values = self.relative_attention_bias(rp_buckets)
