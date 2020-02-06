@@ -1370,7 +1370,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
 
-        if 'return_labels' in kwargs:
+        if kwargs.get('return_labels', False):
             _, decoder_lm_predictions = lm_logits.max(-1)
             _, indices_rp = relative_position_logits.max(-1)
             # shift relative position bucket indices back to relative positions and special indices
