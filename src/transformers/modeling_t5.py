@@ -1325,6 +1325,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                                               self.relative_position_hidden_states_dim, bias=False)
         self.new_relative_position_projection = nn.Linear(config.d_model,
                                                           self.relative_position_hidden_states_dim, bias=False)
+        self.relative_position_projection_activation = torch.tanh
 
         self.relative_position_head = nn.Linear(self.relative_position_hidden_states_dim * 3,
                                                 config.relative_attention_num_buckets
@@ -1396,6 +1397,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         if encoder_relative_position_hidden_states is None:
             encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states * (self.relative_position_hidden_states_dim ** -0.5))
+            if self.relative_position_projection_activation is not None:
+                encoder_relative_position_hidden_states = self.relative_position_projection_activation(encoder_relative_position_hidden_states)
             encoder_outputs = encoder_outputs + (encoder_relative_position_hidden_states,)
             encoder_output_names = encoder_output_names + ('relative_position_hidden_states',)
 
@@ -1442,10 +1445,15 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         #    losses = losses + (loss,)
 
         decoder_relative_position_hidden_states = self.decoder_relative_position_projection(decoder_hidden_states * (self.relative_position_hidden_states_dim ** -0.5))
+        if self.relative_position_projection_activation is not None:
+            decoder_relative_position_hidden_states = self.relative_position_projection_activation(decoder_relative_position_hidden_states)
         decoder_outputs = decoder_outputs + (decoder_relative_position_hidden_states,)
         decoder_output_names = decoder_output_names + ('relative_position_hidden_states',)
 
-        new_decoder_relative_position_hidden_state = self.new_relative_position_projection(new_decoder_hidden_state * (self.relative_position_hidden_states_dim ** -0.5))
+        new_decoder_relative_position_hidden_state = self.new_relative_position_projection(
+            new_decoder_hidden_state * (self.relative_position_hidden_states_dim ** -0.5))
+        if self.relative_position_projection_activation is not None:
+            new_decoder_relative_position_hidden_state = self.relative_position_projection_activation(new_decoder_relative_position_hidden_state)
 
         relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
                                                      decoder_relative_position_hidden_states), dim=1)
