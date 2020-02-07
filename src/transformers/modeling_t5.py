@@ -1124,6 +1124,7 @@ class MultiGoldCrossEntropyLoss(_Loss):
             f'number of elements in inputs [{len(inputs)}] and targets [{len(targets)}] ' \
             f'do not match'
         all_losses = []
+        all_masks_ignore = []
         for i in range(len(inputs)):
             input = inputs[i]       # shape (bs, ..., dims)
             target = targets[i]     # shape (bs, instances, ...)
@@ -1142,16 +1143,19 @@ class MultiGoldCrossEntropyLoss(_Loss):
             # weight loss for individual input-target pairs
             if self.weights is not None:
                 current_losses = current_losses * self.weights[i]
-            # set loss to infinite where all targets are ignored for one instance (caused by padding) because this
-            # would otherwise cause minimal possible loss (0)
-            mask_ignore = (target == self.ignore_indices[i])
-            # ignore only complete gold instances (aggregate up to _gold_ instance level != instance lavel)
-            for _ in range(len(mask_ignore.size()) - 2):
-                mask_ignore, _ = mask_ignore.min(-1)
-            current_losses[mask_ignore] = float('inf')
             all_losses.append(current_losses)
 
+            mask_ignore = (target == self.ignore_indices[i])
+            all_masks_ignore.append(mask_ignore)
+
         losses = torch.cat(all_losses, -1)
+        mask_ignore = torch.cat(all_masks_ignore, -1)
+        # ignore only complete gold instances (aggregate up to _gold_ instance level != instance lavel)
+        for _ in range(len(mask_ignore.size()) - 2):
+            mask_ignore, _ = mask_ignore.min(-1)
+        # set loss to infinite where all targets are ignored for one instance (caused by padding) because this
+        # would otherwise cause minimal possible loss (0)
+        current_losses[mask_ignore] = float('inf')
 
         losses_reduced = []
         if self.reduction == 'mean':
