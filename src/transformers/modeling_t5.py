@@ -323,7 +323,7 @@ class T5Attention(nn.Module):
         is_small = relative_position_buckets < max_exact
 
         is_log_scaled = ~(is_small | is_max)
-        # set to lowest log scaled value max_exact TODO: remove this HACK and set correct values
+        # set to lowest log scaled value max_exact
         #relative_position[is_log_scaled] = max_exact
         #relative_position = torch.where(is_log_scaled, torch.ones_like(relative_position) * max_exact, relative_position)
         # closest possible approximation
@@ -1290,7 +1290,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         encoder_decoder_relative_position = kwargs.pop("encoder_decoder_relative_position", None)
 
         lm_labels = kwargs.pop("decoder_lm_labels", None)
-        return_labels = kwargs.pop('return_labels', False)
+        return_predictions = kwargs.pop('return_predictions', False)
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
@@ -1316,12 +1316,19 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
             encoder_outputs = self.encoder(hidden_states, **kwargs_encoder)
             encoder_hidden_states = encoder_outputs[0]
+            encoder_output_names = ('hidden_states',)
+            if self.encoder.output_hidden_states:
+                encoder_output_names = encoder_output_names + ('all_hidden_states',)
+            if self.encoder.output_attentions:
+                encoder_output_names = encoder_output_names + ('all_attentions',)
         else:
             encoder_outputs = ()
+            encoder_output_names = ()
 
         if encoder_relative_position_hidden_states is None:
             encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states)
             encoder_outputs = encoder_outputs + (encoder_relative_position_hidden_states,)
+            encoder_output_names = encoder_output_names + ('relative_position_hidden_states',)
 
         # Decode
         # Convert decoder inputs in embeddings if needed
@@ -1335,6 +1342,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         kwargs_decoder["encoder_decoder_relative_position"] = encoder_decoder_relative_position
         decoder_outputs = self.decoder(hidden_states, **kwargs_decoder)
         decoder_hidden_states = decoder_outputs[0] # shape (bs, sl, dim)
+        decoder_output_names = ('hidden_states',)
+        if self.decoder.output_hidden_states:
+            decoder_output_names = decoder_output_names + ('all_hidden_states',)
+        if self.decoder.output_attentions:
+            decoder_output_names = decoder_output_names + ('all_attentions',)
+
         len_decoder_seq = decoder_hidden_states.size(1)
 
         def gather_from_sequence(t, idx):
@@ -1361,6 +1374,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         decoder_relative_position_hidden_states = self.decoder_relative_position_projection(decoder_hidden_states)
         decoder_outputs = decoder_outputs + (decoder_relative_position_hidden_states,)
+        decoder_output_names = decoder_output_names + ('relative_position_hidden_states',)
 
         new_decoder_relative_position_hidden_state = self.new_relative_postion_projection(new_decoder_hidden_state)
 
@@ -1384,8 +1398,9 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                       dim=-1))
 
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
+        output_names = ('lm_logits', 'relative_position_logits') + tuple('decoder_'+ don for don in decoder_output_names) + tuple('encoder_' + eon for eon in encoder_output_names)
 
-        if return_labels:
+        if return_predictions:
             _, lm_predictions = lm_logits.detach().max(-1)
             _, rp_indices = relative_position_logits.detach().max(-1)
             # shift relative position bucket indices back to relative positions and special indices
@@ -1403,6 +1418,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # prepend to outputs
             outputs = (lm_predictions, decoder_relative_position_predictions,
                        encoder_decoder_relative_position_predictions) + outputs
+            output_names = ('lm_predictions', 'decoder_relative_position_predictions',
+                            'encoder_decoder_relative_position_predictions') + output_names
 
         relative_position_labels = decoder_relative_position_labels
         if relative_position_labels is not None and lm_labels is not None:
@@ -1432,7 +1449,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
             # prepend lm and distance loss
             outputs = tuple(losses) + outputs
+            output_names = ('loss_lm', 'loss_rp') + output_names
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
         # (reverse T5Attention._relative_position_bucket_with_special)
-        return outputs
+        return outputs + (output_names,)
