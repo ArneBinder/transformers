@@ -1527,8 +1527,12 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             )
 
             # language modeling and relative position loss calculation with multiple correct labels have to be
-            # calculated together
-            loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(self.pad_token_id, T5Attention.RELATIVE_POSITION_PAD))
+            # calculated together.
+            # Note: ignore_index for rp has to be shifted into "bucket-land"
+            loss_fct = MultiGoldCrossEntropyLoss(
+                ignore_indices=(self.pad_token_id,
+                                T5Attention.RELATIVE_POSITION_PAD
+                                - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets))
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
             # prepend lm and distance loss
