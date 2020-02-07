@@ -1333,9 +1333,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         self.init_weights()
 
-    def add_relative_attention_bias_special_embeddings(self, num_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL):
+    def add_relative_attention_bias_special_embeddings(self,
+                                                       num_special=T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL):
         self.encoder.add_relative_attention_bias_special_embeddings(num_special)
         self.decoder.add_relative_attention_bias_special_embeddings(num_special)
+        self.relative_attention_num_buckets_special = num_special
         return num_special
 
     def get_input_embeddings(self):
