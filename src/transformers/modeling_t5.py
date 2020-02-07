@@ -1155,28 +1155,29 @@ class MultiGoldCrossEntropyLoss(_Loss):
             mask_ignore, _ = mask_ignore.min(-1)
         # set loss to infinite where all targets are ignored for one instance (caused by padding) because this
         # would otherwise cause minimal possible loss (0)
-        current_losses[mask_ignore] = float('inf')
+        losses[mask_ignore] = float('inf')
 
         losses_reduced = []
         if self.reduction == 'mean':
-            losses = losses.mean(-1)
-            losses, _indices = losses.min(-1)
-            for l in all_losses:
+            # use sum() to not have to handle ignore index
+            _losses, indices = losses.sum(-1).min(-1)
+            for i, l in enumerate(all_losses):
                 # TODO: allows only one intermediate dim (i.e. sequence data)
-                _indices_expanded = _indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
-                current_losses = l.gather(dim=1, index=_indices_expanded)
-                # TODO: mean only over entries where target != ignore_index
-                losses_reduced.append(current_losses.mean())
-            #loss = losses.mean()
+                indices_expanded = indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
+                current_losses = l.gather(dim=1, index=indices_expanded)
+                current_mask_ignore = all_masks_ignore[i].gather(dim=1, index=indices_expanded)
+                num_not_ignore = (~current_mask_ignore).sum()
+                if num_not_ignore != 0:
+                    losses_reduced.append(current_losses.sum() / num_not_ignore)
+                else:
+                    losses_reduced.append(torch.FloatTensor([0.0]).to(current_losses.device))
         elif self.reduction == 'sum':
-            losses = losses.sum(-1)
-            losses, _indices = losses.min(-1)
-            for l in all_losses:
+            _losses, indices = losses.sum(-1).min(-1)
+            for i, l in enumerate(all_losses):
                 # TODO: allows only one intermediate dim (i.e. sequence data)
-                _indices_expanded = _indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
-                current_losses = l.gather(dim=1, index=_indices_expanded)
+                indices_expanded = indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
+                current_losses = l.gather(dim=1, index=indices_expanded)
                 losses_reduced.append(current_losses.sum())
-            #loss = losses.sum()
         elif self.reduction == 'none':
             raise AttributeError(f'"none" not allowed as reduction function')
         else:
@@ -1186,13 +1187,12 @@ class MultiGoldCrossEntropyLoss(_Loss):
 
 
 class MultiGoldAccuracy(_Loss):
-    def __init__(self, ignore_indices=0, reduction='mean'):
+    def __init__(self, ignore_indices=0, reduction='mean', eps=1e-9):
         super(MultiGoldAccuracy, self).__init__(reduction=reduction)
         self.ignore_indices = ignore_indices
         if not isinstance(self.ignore_indices, (list, tuple)):
             self.ignore_indices = (self.ignore_indices, )
-
-        self.eps = 1e-9
+        self.eps = eps
 
     def forward(self, inputs, targets):
         if not isinstance(inputs,  (list, tuple)):
