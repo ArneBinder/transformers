@@ -25,7 +25,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from torch.nn.modules.loss import _WeightedLoss
+from torch.nn.modules.loss import _Loss
 
 from .configuration_t5 import T5Config
 from .file_utils import DUMMY_INPUTS, DUMMY_MASK, add_start_docstrings
@@ -1100,7 +1100,7 @@ class T5WithLMHeadModel(T5PreTrainedModel):
         return decoder_outputs + encoder_outputs
 
 
-class MultiGoldCrossEntropyLoss(_WeightedLoss):
+class MultiGoldCrossEntropyLoss(_Loss):
     """
     Calculates Cross Entropy loss regarding multiple correct label instances. Only the loss for instances with
     minimal loss is considered. Instances where every label matches its ignore_index are omitted.
@@ -1108,8 +1108,8 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
     Works also for lists of logits and targets (loss is calculated between logits[i] and targets[i]).
     Returns list of aggregated minimal losses (one loss value for each entry in inputs / targets)
     """
-    def __init__(self, weight=None, ignore_indices=-100, reduction='mean', weights=None):
-        super(MultiGoldCrossEntropyLoss, self).__init__(weight=weight, reduction=reduction)
+    def __init__(self, ignore_indices=0, reduction='mean', weights=None): # weight=None,
+        super(MultiGoldCrossEntropyLoss, self).__init__(reduction=reduction) #weight=weight, )
         self.ignore_indices = ignore_indices
         if not isinstance(self.ignore_indices, (list, tuple)):
             self.ignore_indices = (self.ignore_indices, )
@@ -1137,7 +1137,7 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
             # add and expand instance dim in input, then flat it
             input_expanded = input.unsqueeze(1).expand(-1, n, *not_exp_dims)
             current_losses = F.cross_entropy(input_expanded.reshape(-1, d),
-                                             target.reshape(-1), weight=self.weight,
+                                             target.reshape(-1), #weight=self.weight,
                                              ignore_index=self.ignore_indices[i], reduction='none').reshape(target.size())
             # weight loss for individual input-target pairs
             if self.weights is not None:
@@ -1161,6 +1161,7 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
                 # TODO: allows only one intermediate dim (i.e. sequence data)
                 _indices_expanded = _indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, l.size(-1))
                 current_losses = l.gather(dim=1, index=_indices_expanded)
+                # TODO: mean only over entries where target != ignore_index
                 losses_reduced.append(current_losses.mean())
             #loss = losses.mean()
         elif self.reduction == 'sum':
@@ -1178,6 +1179,69 @@ class MultiGoldCrossEntropyLoss(_WeightedLoss):
             raise NotImplementedError(f'unknown reduction function: {self.reduction}')
 
         return losses_reduced
+
+
+class MultiGoldAccuracy(_Loss):
+    def __init__(self, ignore_indices=0, reduction='mean'):
+        super(MultiGoldAccuracy, self).__init__(reduction=reduction)
+        self.ignore_indices = ignore_indices
+        if not isinstance(self.ignore_indices, (list, tuple)):
+            self.ignore_indices = (self.ignore_indices, )
+
+        self.eps = 1e-9
+
+    def forward(self, inputs, targets):
+        if not isinstance(inputs,  (list, tuple)):
+            inputs = (inputs,)
+        if not isinstance(targets,  (list, tuple)):
+            targets = (targets,)
+        assert len(inputs) == len(targets), \
+            f'number of elements in inputs [{len(inputs)}] and targets [{len(targets)}] ' \
+            f'do not match'
+        all_correct = []
+        all_wrong = []
+        all_mask_ignore = []
+        for i in range(len(inputs)):
+            input = inputs[i]  # shape (bs, ...)
+            target = targets[i]  # shape (bs, instances, ...)
+            #bs = target.size(0)
+            n = target.size(1)
+            assert tuple(input.size())[1:] == tuple(target.size())[2:], \
+                'remaining dimensions of input and target must match'
+
+            not_exp_dims = [-1] * (len(input.size()) - 1)
+            # add and expand instance dim in input, then flat it
+            input_expanded = input.unsqueeze(1).expand(-1, n, *not_exp_dims)
+            current_correct = (target == input_expanded) & (target != self.ignore_indices[i])
+            current_wrong = (target != input_expanded)
+            mask_ignore = (target == self.ignore_indices[i])
+
+            #current_correct[mask_ignore] = False
+            #current_wrong[mask_ignore] = True
+            all_correct.append(current_correct)
+            all_wrong.append(current_wrong)
+            all_mask_ignore.append(mask_ignore)
+
+        correct = torch.cat(all_correct, -1)
+        wrong = torch.cat(all_wrong, -1)
+        mask_ignore = torch.cat(all_mask_ignore, -1)
+        # ignore only complete gold instances (aggregate up to _gold_ instance level != instance lavel)
+        for _ in range(len(mask_ignore.size()) - 2):
+            mask_ignore, _ = mask_ignore.min(-1)
+
+        # mask complete entries
+        correct_sum = (correct.sum(-1) * ~mask_ignore).float()
+        wrong_sum = (wrong.sum(-1) * ~mask_ignore).float()
+        max_values, indices = (correct_sum / (correct_sum + wrong_sum + self.eps)).max(-1)
+
+        best_sum = []
+        for _correct, _wrong in zip(all_correct, all_wrong):
+            # TODO: allows only one intermediate dim (i.e. sequence data)
+            _indices_expanded = indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, _correct.size(-1))
+            current_correct = _correct.gather(dim=1, index=_indices_expanded)
+            current_wrong = _wrong.gather(dim=1, index=_indices_expanded)
+            best_sum.append((current_correct.sum(), current_wrong.sum()))
+        return best_sum
 
 
 @add_start_docstrings("""T5 Model with a `language modeling` head and a `relative position prediction` head on top. """,
@@ -1236,6 +1300,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
         self.model_dim = config.d_model
+        self.pad_token_id = config.pad_token_id
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
@@ -1288,6 +1353,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         lm_labels = kwargs.pop("lm_labels", None)
         return_predictions = kwargs.pop('return_predictions', False)
+        return_metrics = kwargs.pop('return_metrics', False)
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
         decoder_relative_position_labels = kwargs.pop("decoder_relative_position_labels", None)
@@ -1397,7 +1463,9 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
         output_names = ('lm_logits', 'relative_position_logits') + tuple('decoder_'+ don for don in decoder_output_names) + tuple('encoder_' + eon for eon in encoder_output_names)
 
-        if return_predictions:
+        rp_predictions = None
+        lm_predictions = None
+        if return_predictions or return_metrics:
             _, lm_predictions = lm_logits.detach().max(-1)
             _, rp_indices = relative_position_logits.detach().max(-1)
             # shift relative position bucket indices back to relative positions and special indices
@@ -1412,23 +1480,38 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             # along dim=1
             encoder_decoder_relative_position_predictions = rp_predictions[:, :-len_decoder_seq]
             decoder_relative_position_predictions = rp_predictions[:, -len_decoder_seq:]
-            # prepend to outputs
-            outputs = (lm_predictions, decoder_relative_position_predictions,
-                       encoder_decoder_relative_position_predictions) + outputs
-            output_names = ('lm_predictions', 'decoder_relative_position_predictions',
-                            'encoder_decoder_relative_position_predictions') + output_names
+            if return_predictions:
+                outputs = (lm_predictions, decoder_relative_position_predictions,
+                           encoder_decoder_relative_position_predictions) + outputs
+                output_names = ('lm_predictions', 'decoder_relative_position_predictions',
+                                'encoder_decoder_relative_position_predictions') + output_names
 
-        relative_position_labels = decoder_relative_position_labels
-        if relative_position_labels is not None and lm_labels is not None:
+        if decoder_relative_position_labels is not None and lm_labels is not None:
             # prepend encoder-to-decoder labels
             if encoder_decoder_relative_position_labels is not None:
-                assert decoder_relative_position_labels is not None, \
-                    'decoder_relative_position_labels is required if encoder_decoder_relative_position_labels is given'
                 relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
-                                                      relative_position_labels), dim=-1)
+                                                      decoder_relative_position_labels), dim=-1)
             else:
+                relative_position_labels = decoder_relative_position_labels
                 # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
-                relative_position_logits = relative_position_logits[:, len_decoder_seq:]
+                relative_position_logits = relative_position_logits[:, -len_decoder_seq:]
+                if return_metrics:
+                    rp_predictions = rp_predictions[:, -len_decoder_seq:]
+
+            if return_metrics:
+                # use only direct neighbors for metric calculation
+                rp_labels_dist1 = torch.where(relative_position_labels.abs() == 1, relative_position_labels,
+                                              torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
+                rp_predictions_dist1 = torch.where(rp_predictions.abs() == 1, rp_predictions,
+                                                   torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
+                # calculate accuracy: returns tuples (#correct, #wrong) for all input pairs
+                matric_function = MultiGoldAccuracy(ignore_indices=(self.pad_token_id,
+                                                                    T5Attention.RELATIVE_POSITION_PAD))
+                lm_metrics, rp_metrics = matric_function(inputs=(lm_predictions.unsqueeze(-1), rp_predictions_dist1),
+                                                         targets=(lm_labels.unsqueeze(-1), rp_labels_dist1))
+
+                outputs = lm_metrics + rp_metrics + outputs
+                output_names = ('correct_lm', 'wrong_lm', 'correct_rp', 'wrong_rp') + output_names
 
             # convert to buckets
             relative_position_labels_buckets = T5Attention._relative_position_bucket_with_special(
@@ -1441,7 +1524,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
             # language modeling and relative position loss calculation with multiple correct labels have to be
             # calculated together
-            loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(-100, T5Attention.RELATIVE_POSITION_PAD))
+            loss_fct = MultiGoldCrossEntropyLoss(ignore_indices=(self.pad_token_id, T5Attention.RELATIVE_POSITION_PAD))
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
             # prepend lm and distance loss
