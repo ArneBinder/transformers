@@ -77,7 +77,7 @@ class T5Config(PretrainedConfig):
         dropout_rate=0.1,
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
-        d_relative_position_hidden_states=100,
+        d_relative_position_hidden_states=1024,
         **kwargs
     ):
         super(T5Config, self).__init__(**kwargs)
