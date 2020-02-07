@@ -1504,14 +1504,14 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                               torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
                 rp_predictions_dist1 = torch.where(rp_predictions.abs() == 1, rp_predictions,
                                                    torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
-                # calculate accuracy: returns tuples (#correct, #wrong) for all input pairs
+                # calculate accuracy: returns tuples (num_correct, num_wrong) for all input pairs
                 matric_function = MultiGoldAccuracy(ignore_indices=(self.pad_token_id,
                                                                     T5Attention.RELATIVE_POSITION_PAD))
                 lm_metrics, rp_metrics = matric_function(inputs=(lm_predictions.unsqueeze(-1), rp_predictions_dist1),
                                                          targets=(lm_labels.unsqueeze(-1), rp_labels_dist1))
 
                 outputs = lm_metrics + rp_metrics + outputs
-                output_names = ('correct_lm', 'wrong_lm', 'correct_rp', 'wrong_rp') + output_names
+                output_names = ('num_correct_lm', 'num_wrong_lm', 'num_correct_rp', 'num_wrong_rp') + output_names
 
             # convert to buckets
             relative_position_labels_buckets = T5Attention._relative_position_bucket_with_special(
