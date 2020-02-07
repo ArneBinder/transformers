@@ -1299,7 +1299,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
-        config.relative_position_hidden_states_dim = 100
+        self.relative_position_hidden_states_dim = config.d_relative_position_hidden_states
 
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
@@ -1319,14 +1319,14 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         # TODO: decide for bias and activation
         self.encoder_relative_position_projection = nn.Linear(config.d_model,
-                                                              config.relative_position_hidden_states_dim,
+                                                              self.relative_position_hidden_states_dim,
                                                               bias=False)
         self.decoder_relative_position_projection = nn.Linear(config.d_model,
-                                                              config.relative_position_hidden_states_dim, bias=False)
+                                                              self.relative_position_hidden_states_dim, bias=False)
         self.new_relative_position_projection = nn.Linear(config.d_model,
-                                                          config.relative_position_hidden_states_dim, bias=False)
+                                                          self.relative_position_hidden_states_dim, bias=False)
 
-        self.relative_position_head = nn.Linear(config.relative_position_hidden_states_dim * 3,
+        self.relative_position_head = nn.Linear(self.relative_position_hidden_states_dim * 3,
                                                 config.relative_attention_num_buckets
                                                 + T5Attention.RELATIVE_POSITION_NUM_BUCKETS_SPECIAL,
                                                 bias=False)
@@ -1395,7 +1395,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             encoder_output_names = ()
 
         if encoder_relative_position_hidden_states is None:
-            encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states)
+            encoder_relative_position_hidden_states = self.encoder_relative_position_projection(encoder_hidden_states * (self.relative_position_hidden_states_dim ** -0.5))
             encoder_outputs = encoder_outputs + (encoder_relative_position_hidden_states,)
             encoder_output_names = encoder_output_names + ('relative_position_hidden_states',)
 
@@ -1441,11 +1441,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         #    #) + decoder_outputs  # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
         #    losses = losses + (loss,)
 
-        decoder_relative_position_hidden_states = self.decoder_relative_position_projection(decoder_hidden_states)
+        decoder_relative_position_hidden_states = self.decoder_relative_position_projection(decoder_hidden_states * (self.relative_position_hidden_states_dim ** -0.5))
         decoder_outputs = decoder_outputs + (decoder_relative_position_hidden_states,)
         decoder_output_names = decoder_output_names + ('relative_position_hidden_states',)
 
-        new_decoder_relative_position_hidden_state = self.new_relative_position_projection(new_decoder_hidden_state)
+        new_decoder_relative_position_hidden_state = self.new_relative_position_projection(new_decoder_hidden_state * (self.relative_position_hidden_states_dim ** -0.5))
 
         relative_position_hidden_states = torch.cat((encoder_relative_position_hidden_states,
                                                      decoder_relative_position_hidden_states), dim=1)
@@ -1534,11 +1534,17 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             loss_fct = MultiGoldCrossEntropyLoss(
                 ignore_indices=(self.pad_token_id,
                                 T5Attention.RELATIVE_POSITION_PAD
-                                - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets))
+                                - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets),
+                #weights=(0.2, 0.8)
+                reduction='mean'
+            )
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
-            # prepend lm and distance loss
-            outputs = tuple(losses) + outputs
+            # prepend lm and distance loss (normalize by batch size if reduction is sum)
+            if loss_fct.reduction == 'sum':
+                outputs = tuple(l / len(lm_labels) for l in losses) + outputs
+            else:
+                outputs = tuple(losses) + outputs
             output_names = ('loss_lm', 'loss_rp') + output_names
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances

@@ -77,12 +77,14 @@ class T5Config(PretrainedConfig):
         dropout_rate=0.1,
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
+        d_relative_position_hidden_states=100,
         **kwargs
     ):
         super(T5Config, self).__init__(**kwargs)
         self.vocab_size = vocab_size
         self.n_positions = n_positions
         self.d_model = d_model
+        self.d_relative_position_hidden_states = d_relative_position_hidden_states
         self.d_kv = d_kv
         self.d_ff = d_ff
         self.num_layers = num_layers
