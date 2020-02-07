@@ -1044,7 +1044,7 @@ class T5WithLMHeadModel(T5PreTrainedModel):
         # that apply to the model as whole.
         # We let the specific kwargs override the common ones in case of conflict.
 
-        lm_labels = kwargs.pop("decoder_lm_labels", None)
+        lm_labels = kwargs.pop("lm_labels", None)
         encoder_decoder_relative_position = kwargs.pop("encoder_decoder_relative_position", None)
 
         kwargs_common = dict(
@@ -1218,10 +1218,16 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     """
 
-    ARGS_TRAIN = ["encoder_input_ids", "decoder_input_ids", "encoder_attention_mask", "decoder_attention_mask",
-                  "encoder_relative_position", "decoder_relative_position", "encoder_decoder_relative_position",
-                  "decoder_label_indices", "decoder_lm_labels", "decoder_relative_position_labels",
-                  "encoder_decoder_relative_position_labels"]
+    ARGS_ENCODER = ["encoder_input_ids", "encoder_attention_mask", "encoder_relative_position", ]
+    ARGS_DECODER = ["decoder_input_ids", "decoder_attention_mask",  "decoder_relative_position",
+                    "encoder_decoder_relative_position"]
+    ARGS_LABELS = ["decoder_label_indices", "lm_labels", "decoder_relative_position_labels",
+                   "encoder_decoder_relative_position_labels"]
+    #ARGS_TRAIN = ["encoder_input_ids", "decoder_input_ids", "encoder_attention_mask", "decoder_attention_mask",
+    #              "encoder_relative_position", "decoder_relative_position", "encoder_decoder_relative_position",
+    #              "decoder_label_indices", "lm_labels", "decoder_relative_position_labels",
+    #              "encoder_decoder_relative_position_labels"]
+    ARGS = ARGS_ENCODER + ARGS_DECODER + ARGS_LABELS
 
     def __init__(self, config):
         super(T5WithLMAndRPPHeadModel, self).__init__(config)
@@ -1263,15 +1269,6 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.decoder.add_relative_attention_bias_special_embeddings(num_special)
         return num_special
 
-    @staticmethod
-    def args_train_encoder():
-        return [arg for arg in T5WithLMAndRPPHeadModel.ARGS_TRAIN
-                if not (arg.startswith('decoder_') or arg.startswith('encoder_decoder_'))]
-
-    @staticmethod
-    def args_train_decoder():
-        return [arg for arg in T5WithLMAndRPPHeadModel.ARGS_TRAIN if arg not in T5WithLMAndRPPHeadModel.args_train_encoder()]
-
     def get_input_embeddings(self):
         return self.shared
 
@@ -1289,7 +1286,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
         encoder_decoder_relative_position = kwargs.pop("encoder_decoder_relative_position", None)
 
-        lm_labels = kwargs.pop("decoder_lm_labels", None)
+        lm_labels = kwargs.pop("lm_labels", None)
         return_predictions = kwargs.pop('return_predictions', False)
 
         encoder_decoder_relative_position_labels = kwargs.pop("encoder_decoder_relative_position_labels", None)
