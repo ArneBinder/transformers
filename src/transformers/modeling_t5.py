@@ -1536,7 +1536,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                                 T5Attention.RELATIVE_POSITION_PAD
                                 - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets),
                 #weights=(0.2, 0.8)
-                reduction='mean'
+                reduction='sum'
             )
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
