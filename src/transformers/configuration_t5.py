@@ -78,6 +78,8 @@ class T5Config(PretrainedConfig):
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
         d_relative_position_hidden_states=1024,
+        loss_reduction='sum',
+        relative_attention_loss_weight=0.8,
         **kwargs
     ):
         super(T5Config, self).__init__(**kwargs)
@@ -94,6 +96,9 @@ class T5Config(PretrainedConfig):
         self.dropout_rate = dropout_rate
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
+        self.loss_reduction = loss_reduction
+        self.relative_attention_loss_weight = relative_attention_loss_weight
+
 
     @property
     def max_position_embeddings(self):

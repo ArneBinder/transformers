@@ -1305,6 +1305,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.relative_attention_num_buckets_special = config.relative_attention_num_buckets_special
         self.model_dim = config.d_model
         self.pad_token_id = config.pad_token_id
+        self.loss_reduction = config.loss_reduction
+        self.relative_attention_loss_weight = config.relative_attention_loss_weight
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
@@ -1543,8 +1545,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                 ignore_indices=(self.pad_token_id,
                                 T5Attention.RELATIVE_POSITION_PAD
                                 - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets),
-                #weights=(0.2, 0.8)
-                reduction='sum'
+                weights=(1.0 - self.relative_attention_loss_weight, self.relative_attention_loss_weight),
+                reduction=self.loss_reduction
             )
             losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
                               targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
