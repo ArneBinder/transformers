@@ -1319,14 +1319,16 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         # TODO: decide for bias and activation
+        self.relative_position_projection_use_bias = True
+        self.relative_position_projection_activation = torch.tanh
         self.encoder_relative_position_projection = nn.Linear(config.d_model,
                                                               self.relative_position_hidden_states_dim,
-                                                              bias=False)
+                                                              bias=self.relative_position_projection_use_bias)
         self.decoder_relative_position_projection = nn.Linear(config.d_model,
-                                                              self.relative_position_hidden_states_dim, bias=False)
+                                                              self.relative_position_hidden_states_dim, bias=self.relative_position_projection_use_bias)
         self.new_relative_position_projection = nn.Linear(config.d_model,
-                                                          self.relative_position_hidden_states_dim, bias=False)
-        self.relative_position_projection_activation = torch.tanh
+                                                          self.relative_position_hidden_states_dim, bias=self.relative_position_projection_use_bias)
+
 
         self.relative_position_head = nn.Linear(self.relative_position_hidden_states_dim * 3,
                                                 config.relative_attention_num_buckets
