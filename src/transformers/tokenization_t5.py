@@ -89,7 +89,7 @@ class T5Tokenizer(PreTrainedTokenizer):
         if extra_ids > 0:
             if additional_special_tokens is None:
                 additional_special_tokens = []
-            additional_special_tokens.extend(["<extra_id_{}>".format(i) for i in range(extra_ids)])
+            additional_special_tokens.extend(["<extra_id_{}>".format(i) for i in range(extra_ids) if "<extra_id_{}>".format(i) not in additional_special_tokens])
 
         super(T5Tokenizer, self).__init__(
             eos_token=eos_token,
