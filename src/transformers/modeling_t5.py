@@ -1288,9 +1288,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
 
     ARGS_ENCODER = ["encoder_input_ids", "encoder_attention_mask", "encoder_relative_position", ]
     ARGS_DECODER = ["decoder_input_ids", "decoder_attention_mask",  "decoder_relative_position",
-                    "encoder_decoder_relative_position"]
-    ARGS_LABELS = ["decoder_label_indices", "lm_labels", "decoder_relative_position_labels",
-                   "encoder_decoder_relative_position_labels"]
+                    "encoder_decoder_relative_position", "decoder_label_indices"]
+    ARGS_LABELS = ["lm_labels", "decoder_relative_position_labels", "encoder_decoder_relative_position_labels"]
     #ARGS_TRAIN = ["encoder_input_ids", "decoder_input_ids", "encoder_attention_mask", "decoder_attention_mask",
     #              "encoder_relative_position", "decoder_relative_position", "encoder_decoder_relative_position",
     #              "decoder_label_indices", "lm_labels", "decoder_relative_position_labels",
