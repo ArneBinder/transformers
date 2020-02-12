@@ -1244,7 +1244,7 @@ class MultiGoldAccuracy(_Loss):
             _indices_expanded = indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, _correct.size(-1))
             current_correct = _correct.gather(dim=1, index=_indices_expanded)
             current_wrong = _wrong.gather(dim=1, index=_indices_expanded)
-            best_sum.append((current_correct.sum(), current_wrong.sum()))
+            best_sum.append({'num_correct': current_correct.sum(), 'num_wrong': current_wrong.sum()})
         return best_sum
 
 
@@ -1476,9 +1476,11 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
                        new_decoder_relative_position_hidden_state_expanded,
                        relative_position_hidden_states],
                       dim=-1))
+        encoder_decoder_relative_position_logits = relative_position_logits[:, :-len_decoder_seq]
+        decoder_relative_position_logits = relative_position_logits[:, -len_decoder_seq:]
 
-        outputs = (lm_logits, relative_position_logits) + decoder_outputs + encoder_outputs
-        output_names = ('lm_logits', 'relative_position_logits') + tuple('decoder_'+ don for don in decoder_output_names) + tuple('encoder_' + eon for eon in encoder_output_names)
+        outputs = (lm_logits, decoder_relative_position_logits, encoder_decoder_relative_position_logits) + decoder_outputs + encoder_outputs
+        output_names = ('lm_logits', 'decoder_relative_position_logits', 'encoder_decoder_relative_position_logits') + tuple('decoder_'+ don for don in decoder_output_names) + tuple('encoder_' + eon for eon in encoder_output_names)
 
         rp_predictions = None
         lm_predictions = None
@@ -1486,7 +1488,7 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             _, lm_predictions = lm_logits.detach().max(-1)
             _, rp_indices = relative_position_logits.detach().max(-1)
             # shift relative position bucket indices back to relative positions and special indices
-            rp_predictions = T5Attention._relative_position_bucket_with_special_to_indices(
+            _rp_predictions = T5Attention._relative_position_bucket_with_special_to_indices(
                 relative_position_buckets=rp_indices,
                 relative_attention_num_buckets=self.relative_attention_num_buckets,
                 relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
@@ -1495,68 +1497,80 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             )
             # slice indices to (encoder_decoder_relative_position_indices, decoder_relative_position_indices)
             # along dim=1
-            encoder_decoder_relative_position_predictions = rp_predictions[:, :-len_decoder_seq]
-            decoder_relative_position_predictions = rp_predictions[:, -len_decoder_seq:]
+            encoder_decoder_relative_position_predictions = _rp_predictions[:, :-len_decoder_seq]
+            decoder_relative_position_predictions = _rp_predictions[:, -len_decoder_seq:]
+            rp_predictions = (decoder_relative_position_predictions, encoder_decoder_relative_position_predictions)
             if return_predictions:
-                outputs = (lm_predictions, decoder_relative_position_predictions,
-                           encoder_decoder_relative_position_predictions) + outputs
+                outputs = (lm_predictions,) + rp_predictions + outputs
                 output_names = ('lm_predictions', 'decoder_relative_position_predictions',
                                 'encoder_decoder_relative_position_predictions') + output_names
 
         if decoder_relative_position_labels is not None and lm_labels is not None:
-            # prepend encoder-to-decoder labels
+            label_names = ['lm', 'rp_decoder']
+            rp_labels = [decoder_relative_position_labels]
+            rp_logits = [decoder_relative_position_logits]
+            metric_ignore_indices = [self.pad_token_id, T5Attention.RELATIVE_POSITION_PAD]
+            loss_ignore_indices = [self.pad_token_id,
+                                   T5Attention.RELATIVE_POSITION_PAD
+                                   - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets]
+            loss_weights = [1.0 - self.relative_attention_loss_weight]
             if encoder_decoder_relative_position_labels is not None:
-                relative_position_labels = torch.cat((encoder_decoder_relative_position_labels,
-                                                      decoder_relative_position_labels), dim=-1)
+                label_names.append('rp_encoder_decoder')
+                rp_labels.append(encoder_decoder_relative_position_labels)
+                rp_logits.append(encoder_decoder_relative_position_logits)
+                metric_ignore_indices.append(T5Attention.RELATIVE_POSITION_PAD)
+                loss_ignore_indices.append(T5Attention.RELATIVE_POSITION_PAD
+                                           - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET
+                                           + self.relative_attention_num_buckets)
+                loss_weights.extend([self.relative_attention_loss_weight / 2.0] * 2)
             else:
-                relative_position_labels = decoder_relative_position_labels
-                # take only _decoder_ relative position logits for loss calculation, if just these labels are provided
-                relative_position_logits = relative_position_logits[:, -len_decoder_seq:]
-                if return_metrics:
-                    rp_predictions = rp_predictions[:, -len_decoder_seq:]
+                rp_predictions = rp_predictions[:1]
+                loss_weights.append(self.relative_attention_loss_weight)
 
             if return_metrics:
-                # use only direct neighbors for metric calculation
-                rp_labels_dist1 = torch.where(relative_position_labels.abs() == 1, relative_position_labels,
-                                              torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
-                rp_predictions_dist1 = torch.where(rp_predictions.abs() == 1, rp_predictions,
-                                                   torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(relative_position_labels.device))
+                rp_labels_dist1 = [torch.where(v.abs() == 1, v, torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(v.device)) for i, v in enumerate(rp_labels)]
+                rp_predictions_dist1 = [torch.where(v.abs() == 1, v, torch.LongTensor([T5Attention.RELATIVE_POSITION_PAD]).to(v.device)) for i, v in enumerate(rp_predictions)]
                 # calculate accuracy: returns tuples (num_correct, num_wrong) for all input pairs
-                matric_function = MultiGoldAccuracy(ignore_indices=(self.pad_token_id,
-                                                                    T5Attention.RELATIVE_POSITION_PAD))
-                lm_metrics, rp_metrics = matric_function(inputs=(lm_predictions.unsqueeze(-1), rp_predictions_dist1),
-                                                         targets=(lm_labels.unsqueeze(-1), rp_labels_dist1))
+                metric_function = MultiGoldAccuracy(ignore_indices=metric_ignore_indices)
+                metrics = metric_function(inputs=[lm_predictions.unsqueeze(-1)] + rp_predictions_dist1,
+                                          targets=[lm_labels.unsqueeze(-1)] + rp_labels_dist1)
+                metrics_flat = []
+                metric_names_flat = []
+                for i, current_metrics in enumerate(metrics):
+                    ln = label_names[i]
+                    for k, v in current_metrics.items():
+                        metrics_flat.append(v)
+                        metric_names_flat.append(f'metric/{k}_{ln}')
+                outputs = tuple(metrics_flat) + outputs
+                output_names = tuple(metric_names_flat) + output_names
 
-                outputs = lm_metrics + rp_metrics + outputs
-                output_names = ('num_correct_lm', 'num_wrong_lm', 'num_correct_rp', 'num_wrong_rp') + output_names
-
-            # convert to buckets
-            relative_position_labels_buckets = T5Attention._relative_position_bucket_with_special(
-                relative_position=relative_position_labels,
-                relative_attention_num_buckets=self.relative_attention_num_buckets,
-                relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
-                relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
-                bidirectional=True
-            )
+            # convert labels to buckets
+            rp_labels_buckets = []
+            for current_rp_labels in rp_labels:
+                rp_labels_buckets.append(T5Attention._relative_position_bucket_with_special(
+                    relative_position=current_rp_labels,
+                    relative_attention_num_buckets=self.relative_attention_num_buckets,
+                    relative_attention_num_buckets_special=self.relative_attention_num_buckets_special,
+                    relative_position_special_offset=T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET,
+                    bidirectional=True
+                ))
 
             # language modeling and relative position loss calculation with multiple correct labels have to be
             # calculated together.
             # Note: ignore_index for rp has to be shifted into "bucket-land"
             loss_fct = MultiGoldCrossEntropyLoss(
-                ignore_indices=(self.pad_token_id,
-                                T5Attention.RELATIVE_POSITION_PAD
-                                - T5Attention.RELATIVE_POSITION_SPECIAL_OFFSET + self.relative_attention_num_buckets),
-                weights=(1.0 - self.relative_attention_loss_weight, self.relative_attention_loss_weight),
+                ignore_indices=loss_ignore_indices,
+                weights=loss_weights,
                 reduction=self.loss_reduction
             )
-            losses = loss_fct(inputs=(lm_logits.unsqueeze(1), relative_position_logits),
-                              targets=(lm_labels.unsqueeze(-1), relative_position_labels_buckets))
+            losses = loss_fct(inputs=[lm_logits.unsqueeze(1)] + rp_logits,
+                              targets=[lm_labels.unsqueeze(-1)] + rp_labels_buckets)
             # prepend lm and distance loss (normalize by batch size if reduction is sum)
             if loss_fct.reduction == 'sum':
                 outputs = tuple(l / len(lm_labels) for l in losses) + outputs
             else:
                 outputs = tuple(losses) + outputs
-            output_names = ('loss_lm', 'loss_rp') + output_names
+            output_names = tuple([f'loss/{ln}' for ln in label_names]) + output_names
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
         # (reverse T5Attention._relative_position_bucket_with_special)
