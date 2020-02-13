@@ -1565,11 +1565,8 @@ class T5WithLMAndRPPHeadModel(T5PreTrainedModel):
             )
             losses = loss_fct(inputs=[lm_logits.unsqueeze(1)] + rp_logits,
                               targets=[lm_labels.unsqueeze(-1)] + rp_labels_buckets)
-            # prepend lm and distance loss (normalize by batch size if reduction is sum)
-            if loss_fct.reduction == 'sum':
-                outputs = tuple(l / len(lm_labels) for l in losses) + outputs
-            else:
-                outputs = tuple(losses) + outputs
+            # prepend lm and distance loss
+            outputs = tuple(losses) + outputs
             output_names = tuple([f'loss/{ln}' for ln in label_names]) + output_names
 
         # REMINDER: convert relative_position_logits.max(-1)[1] indices back to relative distances
