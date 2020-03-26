@@ -902,7 +902,7 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
 
             if self.albert.encoder.switch is not None:
                 all_use_transformers = outputs[-1]
-                outputs = outputs[:-1]
+                #outputs = outputs[:-1]
                 last_use_transformers = all_use_transformers[-1]
                 switch_loss = last_use_transformers.mean()
                 default_loss = loss
