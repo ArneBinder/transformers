@@ -323,10 +323,16 @@ class AlbertTransformer(nn.Module):
         self.embedding_hidden_mapping_in = nn.Linear(config.embedding_size, config.hidden_size)
         self.albert_layer_groups = nn.ModuleList([AlbertLayerGroup(config) for _ in range(config.num_hidden_groups)])
 
+        if config.use_switch:
+            self.switch = nn.Linear(config.hidden_size, 1)
+        else:
+            self.switch = None
+
     def forward(self, hidden_states, attention_mask=None, head_mask=None):
         hidden_states = self.embedding_hidden_mapping_in(hidden_states)
 
         all_attentions = ()
+        all_use_transformer = ()
 
         if self.output_hidden_states:
             all_hidden_states = (hidden_states,)
@@ -343,19 +349,32 @@ class AlbertTransformer(nn.Module):
                 attention_mask,
                 head_mask[group_idx * layers_per_group : (group_idx + 1) * layers_per_group],
             )
-            hidden_states = layer_group_output[0]
+
+            if self.switch is not None:
+                use_transformer = torch.sigmoid(self.switch(hidden_states))
+                all_use_transformer = all_use_transformer + (use_transformer.squeeze(-1),)
+                hidden_states = (1 - use_transformer) * hidden_states + use_transformer * layer_group_output[0]
+            else:
+                hidden_states = layer_group_output[0]
 
             if self.output_attentions:
                 all_attentions = all_attentions + layer_group_output[-1]
 
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
-
+        
+        # for switch-loss  
+        if self.switch is not None:
+            use_transformer = torch.sigmoid(self.switch(hidden_states))
+            all_use_transformer = all_use_transformer + (use_transformer.squeeze(-1),)
+        
         outputs = (hidden_states,)
         if self.output_hidden_states:
             outputs = outputs + (all_hidden_states,)
         if self.output_attentions:
             outputs = outputs + (all_attentions,)
+        if self.switch is not None:
+            outputs = outputs + (all_use_transformer,)
         return outputs  # last-layer hidden state, (all hidden states), (all attentions)
 
 
@@ -880,7 +899,17 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
                 loss = loss_fct(active_logits, active_labels)
             else:
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            outputs = (loss,) + outputs
+
+            if self.albert.encoder.switch is not None:
+                outputs = outputs[:-1]
+                all_use_transformers = outputs[-1]
+                last_use_transformers = all_use_transformers[-1]
+                switch_loss = last_use_transformers.mean()
+                default_loss = loss
+                logger.debug(f'losses: default={default_loss}, switch={switch_loss}')
+                loss = switch_loss + default_loss
+
+            outputs = (loss, default_loss, switch_loss) + outputs
 
         return outputs  # (loss), logits, (hidden_states), (attentions)
 
