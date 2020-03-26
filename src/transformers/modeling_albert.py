@@ -901,15 +901,17 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
             if self.albert.encoder.switch is not None:
-                outputs = outputs[:-1]
                 all_use_transformers = outputs[-1]
+                outputs = outputs[:-1]
                 last_use_transformers = all_use_transformers[-1]
                 switch_loss = last_use_transformers.mean()
                 default_loss = loss
                 logger.debug(f'losses: default={default_loss}, switch={switch_loss}')
                 loss = switch_loss + default_loss
 
-            outputs = (loss, default_loss, switch_loss) + outputs
+                outputs = (loss, default_loss, switch_loss) + outputs
+            else:
+                outputs = (loss,) + outputs
 
         return outputs  # (loss), logits, (hidden_states), (attentions)
 
