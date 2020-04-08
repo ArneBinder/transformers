@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch ALBERT model. """
+"""PyTorch ROLLERBERT model. """
 
 import logging
 import math
@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
-from transformers.configuration_albert import AlbertConfig
+from transformers.configuration_rollerbert import RollerbertConfig
 from transformers.modeling_bert import ACT2FN, BertEmbeddings, BertSelfAttention, prune_linear_layer
 from transformers.modeling_utils import PreTrainedModel
 
@@ -32,15 +32,15 @@ from .file_utils import add_start_docstrings, add_start_docstrings_to_callable
 logger = logging.getLogger(__name__)
 
 
-ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP = {
-    "albert-base-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v1-pytorch_model.bin",
-    "albert-large-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v1-pytorch_model.bin",
-    "albert-xlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v1-pytorch_model.bin",
-    "albert-xxlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v1-pytorch_model.bin",
-    "albert-base-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v2-pytorch_model.bin",
-    "albert-large-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-pytorch_model.bin",
-    "albert-xlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v2-pytorch_model.bin",
-    "albert-xxlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v2-pytorch_model.bin",
+ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP = {
+    "rollerbert-albert-base-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v1-pytorch_model.bin",
+    "rollerbert-albert-large-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v1-pytorch_model.bin",
+    "rollerbert-albert-xlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v1-pytorch_model.bin",
+    "rollerbert-albert-xxlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v1-pytorch_model.bin",
+    "rollerbert-albert-base-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v2-pytorch_model.bin",
+    "rollerbert-albert-large-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-pytorch_model.bin",
+    "rollerbert-albert-xlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v2-pytorch_model.bin",
+    "rollerbert-albert-xxlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v2-pytorch_model.bin",
 }
 
 
@@ -323,10 +323,16 @@ class AlbertTransformer(nn.Module):
         self.embedding_hidden_mapping_in = nn.Linear(config.embedding_size, config.hidden_size)
         self.albert_layer_groups = nn.ModuleList([AlbertLayerGroup(config) for _ in range(config.num_hidden_groups)])
 
+        if config.use_switch:
+            self.switch = nn.Linear(config.hidden_size, 1)
+        else:
+            self.switch = None
+
     def forward(self, hidden_states, attention_mask=None, head_mask=None):
         hidden_states = self.embedding_hidden_mapping_in(hidden_states)
 
         all_attentions = ()
+        all_use_transformer = ()
 
         if self.output_hidden_states:
             all_hidden_states = (hidden_states,)
@@ -343,30 +349,43 @@ class AlbertTransformer(nn.Module):
                 attention_mask,
                 head_mask[group_idx * layers_per_group : (group_idx + 1) * layers_per_group],
             )
-            hidden_states = layer_group_output[0]
+
+            if self.switch is not None:
+                use_transformer = torch.sigmoid(self.switch(hidden_states))
+                all_use_transformer = all_use_transformer + (use_transformer.squeeze(-1),)
+                hidden_states = (1 - use_transformer) * hidden_states + use_transformer * layer_group_output[0]
+            else:
+                hidden_states = layer_group_output[0]
 
             if self.output_attentions:
                 all_attentions = all_attentions + layer_group_output[-1]
 
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
-
+        
+        # for switch-loss  
+        if self.switch is not None:
+            use_transformer = torch.sigmoid(self.switch(hidden_states))
+            all_use_transformer = all_use_transformer + (use_transformer.squeeze(-1),)
+        
         outputs = (hidden_states,)
         if self.output_hidden_states:
             outputs = outputs + (all_hidden_states,)
         if self.output_attentions:
             outputs = outputs + (all_attentions,)
+        if self.switch is not None:
+            outputs = outputs + (all_use_transformer,)
         return outputs  # last-layer hidden state, (all hidden states), (all attentions)
 
 
-class AlbertPreTrainedModel(PreTrainedModel):
+class RollerbertPreTrainedModel(PreTrainedModel):
     """ An abstract class to handle weights initialization and
         a simple interface for downloading and loading pretrained models.
     """
 
-    config_class = AlbertConfig
-    pretrained_model_archive_map = ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP
-    base_model_prefix = "albert"
+    config_class = RollerbertConfig
+    pretrained_model_archive_map = ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP
+    base_model_prefix = "rollerbert"
 
     def _init_weights(self, module):
         """ Initialize the weights.
@@ -382,19 +401,19 @@ class AlbertPreTrainedModel(PreTrainedModel):
             module.weight.data.fill_(1.0)
 
 
-ALBERT_START_DOCSTRING = r"""
+ROLLERBERT_START_DOCSTRING = r"""
 
     This model is a PyTorch `torch.nn.Module <https://pytorch.org/docs/stable/nn.html#torch.nn.Module>`_ sub-class.
     Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general
     usage and behavior.
 
     Args:
-        config (:class:`~transformers.AlbertConfig`): Model configuration class with all the parameters of the model.
+        config (:class:`~transformers.RollerbertConfig`): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the configuration.
             Check out the :meth:`~transformers.PreTrainedModel.from_pretrained` method to load the model weights.
 """
 
-ALBERT_INPUTS_DOCSTRING = r"""
+ROLLERBERT_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`):
             Indices of input sequence tokens in the vocabulary.
@@ -434,14 +453,14 @@ ALBERT_INPUTS_DOCSTRING = r"""
 
 @add_start_docstrings(
     "The bare ALBERT Model transformer outputting raw hidden-states without any specific head on top.",
-    ALBERT_START_DOCSTRING,
+    ROLLERBERT_START_DOCSTRING,
 )
-class AlbertModel(AlbertPreTrainedModel):
+class RollerbertModel(RollerbertPreTrainedModel):
 
-    config_class = AlbertConfig
-    pretrained_model_archive_map = ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP
+    config_class = RollerbertConfig
+    pretrained_model_archive_map = ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP
     load_tf_weights = load_tf_weights_in_albert
-    base_model_prefix = "albert"
+    base_model_prefix = "rollerbert"
 
     def __init__(self, config):
         super().__init__(config)
@@ -484,7 +503,7 @@ class AlbertModel(AlbertPreTrainedModel):
             inner_group_idx = int(layer - group_idx * self.config.inner_group_num)
             self.encoder.albert_layer_groups[group_idx].albert_layers[inner_group_idx].attention.prune_heads(heads)
 
-    @add_start_docstrings_to_callable(ALBERT_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_callable(ROLLERBERT_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -522,11 +541,11 @@ class AlbertModel(AlbertPreTrainedModel):
 
     Example::
 
-        from transformers import AlbertModel, AlbertTokenizer
+        from transformers import RollerbertModel, AlbertTokenizer
         import torch
 
         tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-        model = AlbertModel.from_pretrained('albert-base-v2')
+        model = RollerbertModel.from_pretrained('albert-base-v2')
         input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
         outputs = model(input_ids)
         last_hidden_states = outputs[0]  # The last hidden-state is the first element of the output tuple
@@ -606,13 +625,13 @@ class AlbertMLMHead(nn.Module):
 
 
 @add_start_docstrings(
-    "Albert Model with a `language modeling` head on top.", ALBERT_START_DOCSTRING,
+    "Rollerbert Model with a `language modeling` head on top.", ROLLERBERT_START_DOCSTRING,
 )
-class AlbertForMaskedLM(AlbertPreTrainedModel):
+class RollerbertForMaskedLM(RollerbertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        self.albert = AlbertModel(config)
+        self.albert = RollerbertModel(config)
         self.predictions = AlbertMLMHead(config)
 
         self.init_weights()
@@ -624,7 +643,7 @@ class AlbertForMaskedLM(AlbertPreTrainedModel):
     def get_output_embeddings(self):
         return self.predictions.decoder
 
-    @add_start_docstrings_to_callable(ALBERT_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_callable(ROLLERBERT_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -662,11 +681,11 @@ class AlbertForMaskedLM(AlbertPreTrainedModel):
 
     Example::
 
-        from transformers import AlbertTokenizer, AlbertForMaskedLM
+        from transformers import AlbertTokenizer, RollerbertForMaskedLM
         import torch
 
         tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-        model = AlbertForMaskedLM.from_pretrained('albert-base-v2')
+        model = RollerbertForMaskedLM.from_pretrained('albert-base-v2')
         input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
         outputs = model(input_ids, masked_lm_labels=input_ids)
         loss, prediction_scores = outputs[:2]
@@ -694,22 +713,22 @@ class AlbertForMaskedLM(AlbertPreTrainedModel):
 
 
 @add_start_docstrings(
-    """Albert Model transformer with a sequence classification/regression head on top (a linear layer on top of
+    """Rollerbert Model transformer with a sequence classification/regression head on top (a linear layer on top of
     the pooled output) e.g. for GLUE tasks. """,
-    ALBERT_START_DOCSTRING,
+    ROLLERBERT_START_DOCSTRING,
 )
-class AlbertForSequenceClassification(AlbertPreTrainedModel):
+class RollerbertForSequenceClassification(RollerbertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
 
-        self.albert = AlbertModel(config)
+        self.albert = RollerbertModel(config)
         self.dropout = nn.Dropout(config.classifier_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
 
         self.init_weights()
 
-    @add_start_docstrings_to_callable(ALBERT_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_callable(ROLLERBERT_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -747,11 +766,11 @@ class AlbertForSequenceClassification(AlbertPreTrainedModel):
 
         Examples::
 
-            from transformers import AlbertTokenizer, AlbertForSequenceClassification
+            from transformers import AlbertTokenizer, RollerbertForSequenceClassification
             import torch
 
             tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-            model = AlbertForSequenceClassification.from_pretrained('albert-base-v2')
+            model = RollerbertForSequenceClassification.from_pretrained('albert-base-v2')
             input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute")).unsqueeze(0)  # Batch size 1
             labels = torch.tensor([1]).unsqueeze(0)  # Batch size 1
             outputs = model(input_ids, labels=labels)
@@ -791,20 +810,20 @@ class AlbertForSequenceClassification(AlbertPreTrainedModel):
 @add_start_docstrings(
     """Albert Model with a token classification head on top (a linear layer on top of
     the hidden-states output) e.g. for Named-Entity-Recognition (NER) tasks. """,
-    ALBERT_START_DOCSTRING,
+    ROLLERBERT_START_DOCSTRING,
 )
-class AlbertForTokenClassification(AlbertPreTrainedModel):
+class RollerbertForTokenClassification(RollerbertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
 
-        self.albert = AlbertModel(config)
+        self.albert = RollerbertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
 
         self.init_weights()
 
-    @add_start_docstrings_to_callable(ALBERT_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_callable(ROLLERBERT_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -840,11 +859,11 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
 
     Examples::
 
-        from transformers import AlbertTokenizer, AlbertForTokenClassification
+        from transformers import AlbertTokenizer, RollerbertForTokenClassification
         import torch
 
         tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-        model = AlbertForTokenClassification.from_pretrained('albert-base-v2')
+        model = RollerbertForTokenClassification.from_pretrained('albert-base-v2')
 
         input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
         labels = torch.tensor([1] * input_ids.size(1)).unsqueeze(0)  # Batch size 1
@@ -880,27 +899,39 @@ class AlbertForTokenClassification(AlbertPreTrainedModel):
                 loss = loss_fct(active_logits, active_labels)
             else:
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            outputs = (loss,) + outputs
+
+            if self.albert.encoder.switch is not None:
+                all_use_transformers = outputs[-1]
+                #outputs = outputs[:-1]
+                last_use_transformers = all_use_transformers[-1]
+                switch_loss = last_use_transformers.mean()
+                default_loss = loss
+                logger.debug(f'losses: default={default_loss}, switch={switch_loss}')
+                loss = switch_loss + default_loss
+
+                outputs = (loss, default_loss, switch_loss) + outputs
+            else:
+                outputs = (loss,) + outputs
 
         return outputs  # (loss), logits, (hidden_states), (attentions)
 
 
 @add_start_docstrings(
-    """Albert Model with a span classification head on top for extractive question-answering tasks like SQuAD (a linear layers on top of
+    """Rollerbert Model with a span classification head on top for extractive question-answering tasks like SQuAD (a linear layers on top of
     the hidden-states output to compute `span start logits` and `span end logits`). """,
-    ALBERT_START_DOCSTRING,
+    ROLLERBERT_START_DOCSTRING,
 )
-class AlbertForQuestionAnswering(AlbertPreTrainedModel):
+class RollerbertForQuestionAnswering(RollerbertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
 
-        self.albert = AlbertModel(config)
+        self.albert = RollerbertModel(config)
         self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
 
         self.init_weights()
 
-    @add_start_docstrings_to_callable(ALBERT_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_callable(ROLLERBERT_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -947,11 +978,11 @@ class AlbertForQuestionAnswering(AlbertPreTrainedModel):
         # The checkpoint albert-base-v2 is not fine-tuned for question answering. Please see the
         # examples/run_squad.py example to see how to fine-tune a model to a question answering task.
 
-        from transformers import AlbertTokenizer, AlbertForQuestionAnswering
+        from transformers import AlbertTokenizer, RollerbertForQuestionAnswering
         import torch
 
         tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-        model = AlbertForQuestionAnswering.from_pretrained('albert-base-v2')
+        model = RollerbertForQuestionAnswering.from_pretrained('albert-base-v2')
         question, text = "Who was Jim Henson?", "Jim Henson was a nice puppet"
         input_dict = tokenizer.encode_plus(question, text, return_tensors='pt')
         start_scores, end_scores = model(**input_dict)

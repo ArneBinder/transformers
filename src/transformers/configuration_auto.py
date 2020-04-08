@@ -35,6 +35,7 @@ from .configuration_utils import PretrainedConfig
 from .configuration_xlm import XLM_PRETRAINED_CONFIG_ARCHIVE_MAP, XLMConfig
 from .configuration_xlm_roberta import XLM_ROBERTA_PRETRAINED_CONFIG_ARCHIVE_MAP, XLMRobertaConfig
 from .configuration_xlnet import XLNET_PRETRAINED_CONFIG_ARCHIVE_MAP, XLNetConfig
+from .configuration_rollerbert import ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, RollerbertConfig
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ ALL_PRETRAINED_CONFIG_ARCHIVE_MAP = dict(
         XLM_ROBERTA_PRETRAINED_CONFIG_ARCHIVE_MAP,
         FLAUBERT_PRETRAINED_CONFIG_ARCHIVE_MAP,
         ELECTRA_PRETRAINED_CONFIG_ARCHIVE_MAP,
+        ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP,
     ]
     for key, value, in pretrained_map.items()
 )
@@ -68,6 +70,7 @@ CONFIG_MAPPING = OrderedDict(
     [
         ("t5", T5Config,),
         ("distilbert", DistilBertConfig,),
+        ('rollerbert', RollerbertConfig,),
         ("albert", AlbertConfig,),
         ("camembert", CamembertConfig,),
         ("xlm-roberta", XLMRobertaConfig,),

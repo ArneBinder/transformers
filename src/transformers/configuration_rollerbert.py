@@ -18,19 +18,19 @@
 from .configuration_utils import PretrainedConfig
 
 
-ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    "albert-base-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v1-config.json",
-    "albert-large-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v1-config.json",
-    "albert-xlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v1-config.json",
-    "albert-xxlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v1-config.json",
-    "albert-base-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v2-config.json",
-    "albert-large-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-config.json",
-    "albert-xlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v2-config.json",
-    "albert-xxlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v2-config.json",
+ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "rollerbert-albert-base-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v1-config.json",
+    "rollerbert-albert-large-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v1-config.json",
+    "rollerbert-albert-xlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v1-config.json",
+    "rollerbert-albert-xxlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v1-config.json",
+    "rollerbert-albert-base-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v2-config.json",
+    "rollerbert-albert-large-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-config.json",
+    "rollerbert-albert-xlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v2-config.json",
+    "rollerbert-albert-xxlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v2-config.json",
 }
 
 
-class AlbertConfig(PretrainedConfig):
+class RollerbertConfig(PretrainedConfig):
     r"""
         This is the configuration class to store the configuration of an :class:`~transformers.AlbertModel`.
         It is used to instantiate an ALBERT model according to the specified arguments, defining the model
@@ -103,8 +103,8 @@ class AlbertConfig(PretrainedConfig):
                 A dictionary containing all the available pre-trained checkpoints.
     """
 
-    pretrained_config_archive_map = ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
-    model_type = "albert"
+    pretrained_config_archive_map = ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
+    model_type = "rollerbert"
 
     def __init__(
         self,
@@ -127,6 +127,7 @@ class AlbertConfig(PretrainedConfig):
         pad_token_id=0,
         bos_token_id=2,
         eos_token_id=3,
+        use_switch=True,
         **kwargs
     ):
         super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
@@ -147,3 +148,4 @@ class AlbertConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.layer_norm_eps = layer_norm_eps
         self.classifier_dropout_prob = classifier_dropout_prob
+        self.use_switch = use_switch

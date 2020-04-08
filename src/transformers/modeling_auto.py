@@ -36,6 +36,7 @@ from .configuration_auto import (
     XLMConfig,
     XLMRobertaConfig,
     XLNetConfig,
+    RollerbertConfig,
 )
 from .configuration_utils import PretrainedConfig
 from .modeling_albert import (
@@ -127,6 +128,15 @@ from .modeling_xlnet import (
     XLNetModel,
 )
 
+from .modeling_rollerbert import (
+    ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
+    RollerbertForMaskedLM,
+    RollerbertForQuestionAnswering,
+    RollerbertForSequenceClassification,
+    RollerbertForTokenClassification,
+    RollerbertModel,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +160,7 @@ ALL_PRETRAINED_MODEL_ARCHIVE_MAP = dict(
         FLAUBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
         XLM_ROBERTA_PRETRAINED_MODEL_ARCHIVE_MAP,
         ELECTRA_PRETRAINED_MODEL_ARCHIVE_MAP,
+        ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP
     ]
     for key, value, in pretrained_map.items()
 )
@@ -172,6 +183,7 @@ MODEL_MAPPING = OrderedDict(
         (XLMConfig, XLMModel),
         (CTRLConfig, CTRLModel),
         (ElectraConfig, ElectraModel),
+        (RollerbertConfig, RollerbertModel),
     ]
 )
 
@@ -193,6 +205,7 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
         (XLMConfig, XLMWithLMHeadModel),
         (CTRLConfig, CTRLLMHeadModel),
         (ElectraConfig, ElectraForPreTraining),
+        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
@@ -214,6 +227,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
         (XLMConfig, XLMWithLMHeadModel),
         (CTRLConfig, CTRLLMHeadModel),
         (ElectraConfig, ElectraForMaskedLM),
+        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
@@ -229,6 +243,7 @@ MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForSequenceClassification),
         (FlaubertConfig, FlaubertForSequenceClassification),
         (XLMConfig, XLMForSequenceClassification),
+        (RollerbertConfig, RollerbertForSequenceClassification),
     ]
 )
 
@@ -241,6 +256,7 @@ MODEL_FOR_QUESTION_ANSWERING_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForQuestionAnsweringSimple),
         (FlaubertConfig, FlaubertForQuestionAnsweringSimple),
         (XLMConfig, XLMForQuestionAnsweringSimple),
+        (RollerbertConfig, RollerbertForQuestionAnswering),
     ]
 )
 
@@ -255,6 +271,7 @@ MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForTokenClassification),
         (AlbertConfig, AlbertForTokenClassification),
         (ElectraConfig, ElectraForTokenClassification),
+        (RollerbertConfig, RollerbertForTokenClassification),
     ]
 )
 

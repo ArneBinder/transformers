@@ -46,6 +46,7 @@ from .configuration_openai import OPENAI_GPT_PRETRAINED_CONFIG_ARCHIVE_MAP, Open
 from .configuration_roberta import ROBERTA_PRETRAINED_CONFIG_ARCHIVE_MAP, RobertaConfig
 from .configuration_t5 import T5_PRETRAINED_CONFIG_ARCHIVE_MAP, T5Config
 from .configuration_transfo_xl import TRANSFO_XL_PRETRAINED_CONFIG_ARCHIVE_MAP, TransfoXLConfig
+from .configuration_rollerbert import ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, RollerbertConfig
 
 # Configurations
 from .configuration_utils import PretrainedConfig
@@ -306,6 +307,17 @@ if is_torch_available():
         ElectraModel,
         load_tf_weights_in_electra,
         ELECTRA_PRETRAINED_MODEL_ARCHIVE_MAP,
+    )
+
+    from .modeling_rollerbert import (
+        RollerbertPreTrainedModel,
+        RollerbertModel,
+        RollerbertForMaskedLM,
+        RollerbertForSequenceClassification,
+        RollerbertForQuestionAnswering,
+        RollerbertForTokenClassification,
+        #load_tf_weights_in_albert,
+        ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
     )
 
     # Optimization
