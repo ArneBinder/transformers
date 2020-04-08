@@ -26,6 +26,7 @@ BART_PRETRAINED_CONFIG_ARCHIVE_MAP = {
     "bart-large": "https://s3.amazonaws.com/models.huggingface.co/bert/facebook/bart-large/config.json",
     "bart-large-mnli": "https://s3.amazonaws.com/models.huggingface.co/bert/facebook/bart-large-mnli/config.json",
     "bart-large-cnn": "https://s3.amazonaws.com/models.huggingface.co/bert/facebook/bart-large-cnn/config.json",
+    "bart-large-xsum": "https://s3.amazonaws.com/models.huggingface.co/bert/facebook/bart-large-xsum/config.json",
 }
 
 
@@ -55,7 +56,6 @@ class BartConfig(PretrainedConfig):
         max_position_embeddings=1024,
         init_std=0.02,
         classifier_dropout=0.0,
-        output_past=False,
         num_labels=3,
         is_encoder_decoder=True,
         pad_token_id=1,
@@ -71,7 +71,6 @@ class BartConfig(PretrainedConfig):
         """
         super().__init__(
             num_labels=num_labels,
-            output_past=output_past,
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
