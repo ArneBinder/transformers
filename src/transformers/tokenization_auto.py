@@ -45,6 +45,7 @@ from .configuration_auto import (
     ReformerConfig,
     RetriBertConfig,
     RobertaConfig,
+    RollerbertConfig,
     T5Config,
     TransfoXLConfig,
     XLMConfig,
@@ -81,6 +82,7 @@ from .tokenization_rag import RagTokenizer
 from .tokenization_reformer import ReformerTokenizer
 from .tokenization_retribert import RetriBertTokenizer, RetriBertTokenizerFast
 from .tokenization_roberta import RobertaTokenizer, RobertaTokenizerFast
+from .tokenization_rollerbert import RollerbertTokenizer
 from .tokenization_t5 import T5Tokenizer
 from .tokenization_transfo_xl import TransfoXLTokenizer, TransfoXLTokenizerFast
 from .tokenization_xlm import XLMTokenizer
@@ -127,6 +129,7 @@ TOKENIZER_MAPPING = OrderedDict(
         (BertGenerationConfig, (BertGenerationTokenizer, None)),
         (LayoutLMConfig, (LayoutLMTokenizer, None)),
         (RagConfig, (RagTokenizer, None)),
+        (RollerbertConfig, (RollerbertTokenizer, None)),
     ]
 )
 

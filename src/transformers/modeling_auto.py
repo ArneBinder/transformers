@@ -49,6 +49,7 @@ from .configuration_auto import (
     XLMConfig,
     XLMRobertaConfig,
     XLNetConfig,
+    RollerbertConfig,
     replace_list_option_in_docstrings,
 )
 from .configuration_marian import MarianConfig
@@ -200,6 +201,15 @@ from .modeling_xlnet import (
 )
 from .utils import logging
 
+from .modeling_rollerbert import (
+    ROLLERBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
+    RollerbertForMaskedLM,
+    RollerbertForQuestionAnswering,
+    RollerbertForSequenceClassification,
+    RollerbertForTokenClassification,
+    RollerbertModel,
+)
+
 
 logger = logging.get_logger(__name__)
 
@@ -232,6 +242,7 @@ MODEL_MAPPING = OrderedDict(
         (LxmertConfig, LxmertModel),
         (BertGenerationConfig, BertGenerationEncoder),
         (DPRConfig, DPRQuestionEncoder),
+        (RollerbertConfig, RollerbertModel),
     ]
 )
 
@@ -259,6 +270,7 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
         (CTRLConfig, CTRLLMHeadModel),
         (ElectraConfig, ElectraForPreTraining),
         (LxmertConfig, LxmertForPreTraining),
+        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
@@ -288,6 +300,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
         (EncoderDecoderConfig, EncoderDecoderModel),
         (ReformerConfig, ReformerModelWithLMHead),
         (FunnelConfig, FunnelForMaskedLM),
+        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
@@ -359,6 +372,7 @@ MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
         (XLMConfig, XLMForSequenceClassification),
         (ElectraConfig, ElectraForSequenceClassification),
         (FunnelConfig, FunnelForSequenceClassification),
+        (RollerbertConfig, RollerbertForSequenceClassification),
     ]
 )
 
@@ -376,6 +390,7 @@ MODEL_FOR_QUESTION_ANSWERING_MAPPING = OrderedDict(
         (FlaubertConfig, FlaubertForQuestionAnsweringSimple),
         (MobileBertConfig, MobileBertForQuestionAnswering),
         (XLMConfig, XLMForQuestionAnsweringSimple),
+        (RollerbertConfig, RollerbertForQuestionAnswering),
         (ElectraConfig, ElectraForQuestionAnswering),
         (ReformerConfig, ReformerForQuestionAnswering),
         (FunnelConfig, FunnelForQuestionAnswering),
@@ -397,6 +412,7 @@ MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForTokenClassification),
         (AlbertConfig, AlbertForTokenClassification),
         (ElectraConfig, ElectraForTokenClassification),
+        (RollerbertConfig, RollerbertForTokenClassification),
         (FlaubertConfig, FlaubertForTokenClassification),
         (FunnelConfig, FunnelForTokenClassification),
     ]
