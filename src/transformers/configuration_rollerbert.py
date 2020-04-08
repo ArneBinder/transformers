@@ -17,25 +17,19 @@
 
 from .configuration_utils import PretrainedConfig
 
+from .configuration_albert import AlbertConfig, ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
 
 ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    "rollerbert-albert-base-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v1-config.json",
-    "rollerbert-albert-large-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v1-config.json",
-    "rollerbert-albert-xlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v1-config.json",
-    "rollerbert-albert-xxlarge-v1": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v1-config.json",
-    "rollerbert-albert-base-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-base-v2-config.json",
-    "rollerbert-albert-large-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-large-v2-config.json",
-    "rollerbert-albert-xlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xlarge-v2-config.json",
-    "rollerbert-albert-xxlarge-v2": "https://s3.amazonaws.com/models.huggingface.co/bert/albert-xxlarge-v2-config.json",
+   f"rollerbert-{k}": v for k, v in ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP.items()
 }
 
 
-class RollerbertConfig(PretrainedConfig):
+class RollerbertConfig(AlbertConfig):
     r"""
-        This is the configuration class to store the configuration of an :class:`~transformers.AlbertModel`.
-        It is used to instantiate an ALBERT model according to the specified arguments, defining the model
+        This is the configuration class to store the configuration of an :class:`~transformers.RollerbertModel`.
+        It is used to instantiate an ROLLERBERT model according to the specified arguments, defining the model
         architecture. Instantiating a configuration with the defaults will yield a similar configuration to that of
-        the ALBERT `xxlarge <https://huggingface.co/albert-xxlarge-v2>`__ architecture.
+        the ROLLERBERT `xxlarge <https://huggingface.co/albert-xxlarge-v2>`__ architecture.
 
         Configuration objects inherit from  :class:`~transformers.PretrainedConfig` and can be used
         to control the model outputs. Read the documentation from  :class:`~transformers.PretrainedConfig`
@@ -44,8 +38,8 @@ class RollerbertConfig(PretrainedConfig):
 
         Args:
             vocab_size (:obj:`int`, optional, defaults to 30000):
-                Vocabulary size of the ALBERT model. Defines the different tokens that
-                can be represented by the `inputs_ids` passed to the forward method of :class:`~transformers.AlbertModel`.
+                Vocabulary size of the ROLLERBERT model. Defines the different tokens that
+                can be represented by the `inputs_ids` passed to the forward method of :class:`~transformers.RollerbertModel`.
             embedding_size (:obj:`int`, optional, defaults to 128):
                 Dimensionality of vocabulary embeddings.
             hidden_size (:obj:`int`, optional, defaults to 4096):
@@ -71,7 +65,7 @@ class RollerbertConfig(PretrainedConfig):
                 The maximum sequence length that this model might ever be used with. Typically set this to something
                 large (e.g., 512 or 1024 or 2048).
             type_vocab_size (:obj:`int`, optional, defaults to 2):
-                The vocabulary size of the `token_type_ids` passed into :class:`~transformers.AlbertModel`.
+                The vocabulary size of the `token_type_ids` passed into :class:`~transformers.RollerbertModel`.
             initializer_range (:obj:`float`, optional, defaults to 0.02):
                 The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
             layer_norm_eps (:obj:`float`, optional, defaults to 1e-12):
@@ -81,19 +75,19 @@ class RollerbertConfig(PretrainedConfig):
 
         Example::
 
-            from transformers import AlbertConfig, AlbertModel
-            # Initializing an ALBERT-xxlarge style configuration
-            albert_xxlarge_configuration = AlbertConfig()
+            from transformers import RollerbertConfig, RollerbertModel
+            # Initializing an ROLLERBERT-xxlarge style configuration
+            rollerbert_xxlarge_configuration = RollerbertConfig()
 
-            # Initializing an ALBERT-base style configuration
-            albert_base_configuration = AlbertConfig(
+            # Initializing an ROLLERBERT-base style configuration
+            rollerbert_base_configuration = RollerbertConfig(
                 hidden_size=768,
                 num_attention_heads=12,
                 intermediate_size=3072,
             )
 
-            # Initializing a model from the ALBERT-base style configuration
-            model = AlbertModel(albert_xxlarge_configuration)
+            # Initializing a model from the ROLLERBERT-base style configuration
+            model = RollerbertModel(rollerbert_xxlarge_configuration)
 
             # Accessing the model configuration
             configuration = model.config
@@ -108,44 +102,9 @@ class RollerbertConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=30000,
-        embedding_size=128,
-        hidden_size=4096,
-        num_hidden_layers=12,
-        num_hidden_groups=1,
-        num_attention_heads=64,
-        intermediate_size=16384,
-        inner_group_num=1,
-        hidden_act="gelu_new",
-        hidden_dropout_prob=0,
-        attention_probs_dropout_prob=0,
-        max_position_embeddings=512,
-        type_vocab_size=2,
-        initializer_range=0.02,
-        layer_norm_eps=1e-12,
-        classifier_dropout_prob=0.1,
-        pad_token_id=0,
-        bos_token_id=2,
-        eos_token_id=3,
         use_switch=True,
         **kwargs
     ):
-        super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
+        super().__init__(**kwargs)
 
-        self.vocab_size = vocab_size
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-        self.num_hidden_layers = num_hidden_layers
-        self.num_hidden_groups = num_hidden_groups
-        self.num_attention_heads = num_attention_heads
-        self.inner_group_num = inner_group_num
-        self.hidden_act = hidden_act
-        self.intermediate_size = intermediate_size
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.max_position_embeddings = max_position_embeddings
-        self.type_vocab_size = type_vocab_size
-        self.initializer_range = initializer_range
-        self.layer_norm_eps = layer_norm_eps
-        self.classifier_dropout_prob = classifier_dropout_prob
         self.use_switch = use_switch

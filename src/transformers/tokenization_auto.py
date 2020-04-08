@@ -66,6 +66,7 @@ TOKENIZER_MAPPING = OrderedDict(
     [
         (T5Config, (T5Tokenizer, None)),
         (DistilBertConfig, (DistilBertTokenizer, DistilBertTokenizerFast)),
+        (RollerbertConfig, (RollerbertTokenizer, None)),
         (AlbertConfig, (AlbertTokenizer, None)),
         (CamembertConfig, (CamembertTokenizer, None)),
         (XLMRobertaConfig, (XLMRobertaTokenizer, None)),
@@ -80,7 +81,6 @@ TOKENIZER_MAPPING = OrderedDict(
         (FlaubertConfig, (FlaubertTokenizer, None)),
         (XLMConfig, (XLMTokenizer, None)),
         (CTRLConfig, (CTRLTokenizer, None)),
-        (RollerbertConfig, (RollerbertTokenizer, None)),
     ]
 )
 

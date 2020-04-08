@@ -70,7 +70,7 @@ CONFIG_MAPPING = OrderedDict(
     [
         ("t5", T5Config,),
         ("distilbert", DistilBertConfig,),
-        ('rollerbert', RollerbertConfig,),
+        ("rollerbert", RollerbertConfig,),
         ("albert", AlbertConfig,),
         ("camembert", CamembertConfig,),
         ("xlm-roberta", XLMRobertaConfig,),

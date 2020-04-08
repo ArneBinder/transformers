@@ -169,6 +169,7 @@ MODEL_MAPPING = OrderedDict(
     [
         (T5Config, T5Model),
         (DistilBertConfig, DistilBertModel),
+        (RollerbertConfig, RollerbertModel),
         (AlbertConfig, AlbertModel),
         (CamembertConfig, CamembertModel),
         (XLMRobertaConfig, XLMRobertaModel),
@@ -183,7 +184,6 @@ MODEL_MAPPING = OrderedDict(
         (XLMConfig, XLMModel),
         (CTRLConfig, CTRLModel),
         (ElectraConfig, ElectraModel),
-        (RollerbertConfig, RollerbertModel),
     ]
 )
 
@@ -191,6 +191,7 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
     [
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
+        (RollerbertConfig, RollerbertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
@@ -205,7 +206,6 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
         (XLMConfig, XLMWithLMHeadModel),
         (CTRLConfig, CTRLLMHeadModel),
         (ElectraConfig, ElectraForPreTraining),
-        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
@@ -213,6 +213,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
     [
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
+        (RollerbertConfig, RollerbertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
@@ -227,13 +228,13 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
         (XLMConfig, XLMWithLMHeadModel),
         (CTRLConfig, CTRLLMHeadModel),
         (ElectraConfig, ElectraForMaskedLM),
-        (RollerbertConfig, RollerbertForMaskedLM),
     ]
 )
 
 MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForSequenceClassification),
+        (RollerbertConfig, RollerbertForSequenceClassification),
         (AlbertConfig, AlbertForSequenceClassification),
         (CamembertConfig, CamembertForSequenceClassification),
         (XLMRobertaConfig, XLMRobertaForSequenceClassification),
@@ -243,26 +244,27 @@ MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForSequenceClassification),
         (FlaubertConfig, FlaubertForSequenceClassification),
         (XLMConfig, XLMForSequenceClassification),
-        (RollerbertConfig, RollerbertForSequenceClassification),
     ]
 )
 
 MODEL_FOR_QUESTION_ANSWERING_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForQuestionAnswering),
+        (RollerbertConfig, RollerbertForQuestionAnswering),
         (AlbertConfig, AlbertForQuestionAnswering),
         (RobertaConfig, RobertaForQuestionAnswering),
         (BertConfig, BertForQuestionAnswering),
         (XLNetConfig, XLNetForQuestionAnsweringSimple),
         (FlaubertConfig, FlaubertForQuestionAnsweringSimple),
         (XLMConfig, XLMForQuestionAnsweringSimple),
-        (RollerbertConfig, RollerbertForQuestionAnswering),
     ]
 )
 
 MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForTokenClassification),
+        (RollerbertConfig, RollerbertForTokenClassification),
+        (AlbertConfig, AlbertForTokenClassification),
         (CamembertConfig, CamembertForTokenClassification),
         (XLMConfig, XLMForTokenClassification),
         (XLMRobertaConfig, XLMRobertaForTokenClassification),
@@ -271,7 +273,6 @@ MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING = OrderedDict(
         (XLNetConfig, XLNetForTokenClassification),
         (AlbertConfig, AlbertForTokenClassification),
         (ElectraConfig, ElectraForTokenClassification),
-        (RollerbertConfig, RollerbertForTokenClassification),
     ]
 )
 
