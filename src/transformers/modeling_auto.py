@@ -29,6 +29,7 @@ from .configuration_auto import (
     ElectraConfig,
     FlaubertConfig,
     GPT2Config,
+    GuideBertConfig,
     OpenAIGPTConfig,
     RobertaConfig,
     T5Config,
@@ -92,6 +93,14 @@ from .modeling_flaubert import (
     FlaubertWithLMHeadModel,
 )
 from .modeling_gpt2 import GPT2_PRETRAINED_MODEL_ARCHIVE_MAP, GPT2LMHeadModel, GPT2Model
+from .modeling_guidebert import (
+    GUIDEBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
+    GuideBertForMaskedLM,
+    GuideBertForQuestionAnswering,
+    GuideBertForSequenceClassification,
+    GuideBertForTokenClassification,
+    GuideBertModel,
+)
 from .modeling_openai import OPENAI_GPT_PRETRAINED_MODEL_ARCHIVE_MAP, OpenAIGPTLMHeadModel, OpenAIGPTModel
 from .modeling_roberta import (
     ROBERTA_PRETRAINED_MODEL_ARCHIVE_MAP,
@@ -150,6 +159,7 @@ ALL_PRETRAINED_MODEL_ARCHIVE_MAP = dict(
         FLAUBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
         XLM_ROBERTA_PRETRAINED_MODEL_ARCHIVE_MAP,
         ELECTRA_PRETRAINED_MODEL_ARCHIVE_MAP,
+        GUIDEBERT_PRETRAINED_MODEL_ARCHIVE_MAP,
     ]
     for key, value, in pretrained_map.items()
 )
@@ -158,6 +168,7 @@ MODEL_MAPPING = OrderedDict(
     [
         (T5Config, T5Model),
         (DistilBertConfig, DistilBertModel),
+        (GuideBertConfig, GuideBertModel),
         (AlbertConfig, AlbertModel),
         (CamembertConfig, CamembertModel),
         (XLMRobertaConfig, XLMRobertaModel),
@@ -179,6 +190,7 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
     [
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
+        (GuideBertConfig, GuideBertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
@@ -200,6 +212,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
     [
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
+        (GuideBertConfig, GuideBertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
@@ -220,6 +233,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
 MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForSequenceClassification),
+        (GuideBertConfig, GuideBertForSequenceClassification),
         (AlbertConfig, AlbertForSequenceClassification),
         (CamembertConfig, CamembertForSequenceClassification),
         (XLMRobertaConfig, XLMRobertaForSequenceClassification),
@@ -235,6 +249,7 @@ MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
 MODEL_FOR_QUESTION_ANSWERING_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForQuestionAnswering),
+        (GuideBertConfig, GuideBertForQuestionAnswering),
         (AlbertConfig, AlbertForQuestionAnswering),
         (RobertaConfig, RobertaForQuestionAnswering),
         (BertConfig, BertForQuestionAnswering),
@@ -248,6 +263,7 @@ MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING = OrderedDict(
     [
         (DistilBertConfig, DistilBertForTokenClassification),
         (CamembertConfig, CamembertForTokenClassification),
+        (GuideBertConfig, GuideBertForTokenClassification),
         (XLMConfig, XLMForTokenClassification),
         (XLMRobertaConfig, XLMRobertaForTokenClassification),
         (RobertaConfig, RobertaForTokenClassification),
