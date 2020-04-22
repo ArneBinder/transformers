@@ -15,10 +15,12 @@
 """PyTorch GUIDEBERT model. """
 
 import logging
+from typing import Optional
 
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
+from torch.nn.functional import gumbel_softmax
 
 from .modeling_albert import AlbertModel, AlbertPreTrainedModel, ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP, \
     AlbertForQuestionAnswering, AlbertForTokenClassification, AlbertForSequenceClassification
@@ -33,6 +35,25 @@ logger = logging.getLogger(__name__)
 GUIDEBERT_PRETRAINED_MODEL_ARCHIVE_MAP = {
     f"guidebert-{k}": v for k, v in ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP.items()
 }
+
+
+class GradientReverse(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.save_for_backward(scale)
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        scale = ctx.saved_tensors[0]
+        return scale * grad_output.neg(), None
+
+
+def grad_reverse(x: torch.FloatTensor, scale: Optional[torch.FloatTensor] = None):
+    if scale is None:
+        scale = torch.ones_like(x)
+    return GradientReverse.apply(x, scale)
 
 
 class GuideBertPreTrainedModel(AlbertPreTrainedModel):
@@ -135,6 +156,10 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
+        # TODO: get these from tokenizer!
+        self.mask_token_id = 4
+        self.pad_token_id = 0
+
         self.albert = AlbertModel(config)
         self.predictions = GuidebertMLMHead(config)
 
@@ -158,7 +183,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         position_ids=None,
         head_mask=None,
         inputs_embeds=None,
-        masked_lm_labels=None,
+        labels=None,
     ):
         r"""
         masked_lm_labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`, defaults to :obj:`None`):
@@ -198,31 +223,79 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
 
         """
 
-        # TODO: implement GuideBert here!
+        # get initial embeddings
+        embedding_output = self.albert.embeddings(
+            input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
+        )
 
+        # trigger mask generation, iff input_ids are also provided as labels
+        if labels is not None and labels is input_ids:
+            input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
+            embedding_mask = self.albert.embeddings(
+                input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
+            )
+            embedding_choice = torch.stack((embedding_output, embedding_mask), dim=2)
+            mask_padding = input_ids == self.pad_token_id
+
+            outputs = self.albert(
+                input_ids=None,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=embedding_output,
+            )
+            sequence_output = outputs[0]
+            logits = self.classifier(sequence_output)
+            hard = gumbel_softmax(logits=logits, hard=True)
+
+            # do not allow padding positions for masking
+            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).unsqueeze(0).unsqueeze(0)] = 1.0
+            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True]).unsqueeze(0).unsqueeze(0)] = 0.0
+
+            # index == 1 indicates masking
+            to_mask = hard[:, :, 1].detach().bool()
+            # calculate amount of
+            n_mask = to_mask.int().sum()
+            n_not_mask = (~to_mask).int().sum() - mask_padding.int().sum()
+            p_mask = n_mask.float() / (n_mask + n_not_mask)
+
+            # Apply gradient inversion. Scale by inverted amount of masked tokens:
+            # As more tokens are masked, as less this is a good signal.
+            # Or: High gradients from _few_ masked tokens are better.
+            hard = grad_reverse(hard, scale=1.0 - p_mask)
+
+            # select mask or real input depending on "hard softmax"
+            embedding_output = (embedding_choice * hard.unsqueeze(dim=-1)).sum(dim=2)
+
+            # do not calculate loss for not-masked tokens by setting labels to ignore_index
+            labels = labels.clone()
+            labels[~to_mask] = -100     # CrossEntropyLoss ignore_index
+
+        # default language masking functionality (see Albert model)
         outputs = self.albert(
-            input_ids=input_ids,
+            input_ids=None,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
+            inputs_embeds=embedding_output,
         )
-        sequence_outputs = outputs[0]
+        sequence_output = outputs[0]
 
-        prediction_scores = self.predictions(sequence_outputs)
+        prediction_scores = self.predictions(sequence_output)
 
         outputs = (prediction_scores,) + outputs[2:]  # Add hidden states and attention if they are here
-        if masked_lm_labels is not None:
+        if labels is not None:
             loss_fct = CrossEntropyLoss()
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
+            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
             outputs = (masked_lm_loss,) + outputs
 
         return outputs
 
 
 @add_start_docstrings(
-    """Guidebert Model transformer with a sequence classification/regression head on top (a linear layer on top of
+    """GuideBert Model transformer with a sequence classification/regression head on top (a linear layer on top of
     the pooled output) e.g. for GLUE tasks. """,
     GUIDEBERT_START_DOCSTRING,
 )
@@ -231,7 +304,7 @@ class GuideBertForSequenceClassification(AlbertForSequenceClassification):
 
 
 @add_start_docstrings(
-    """Guidebert Model with a token classification head on top (a linear layer on top of
+    """GuideBert Model with a token classification head on top (a linear layer on top of
     the hidden-states output) e.g. for Named-Entity-Recognition (NER) tasks. """,
     GUIDEBERT_START_DOCSTRING,
 )
