@@ -103,13 +103,19 @@ class GuideBertConfig(AlbertConfig):
         self,
         mask_token_id=4,
         # TODO: check/rework this condition!
-        # Only for training, generate masks as GuideBert from input_ids.
-        # This allows for default mask generation during evaluation.
+        # If enabled only for training, generate masks as GuideBert from input_ids.
+        # This would allow for default mask generation during evaluation.
         generate_masking_on_train=True,
-        generate_masking_on_eval=False,
+        generate_masking_on_eval=True,
+        lambda_mask_loss=0.5,
+        lambda_adv_gradient=1.0,
+        p_mask_target=0.2,
         **kwargs
     ):
         super().__init__(**kwargs)
         self.mask_token_id = mask_token_id
         self.generate_masking_on_train = generate_masking_on_train
         self.generate_masking_on_eval = generate_masking_on_eval
+        self.lambda_mask_loss = lambda_mask_loss
+        self.lambda_adv_gradient = lambda_adv_gradient
+        self.p_mask_target = p_mask_target

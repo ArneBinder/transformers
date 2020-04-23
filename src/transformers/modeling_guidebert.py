@@ -52,6 +52,8 @@ class GradientReverse(torch.autograd.Function):
 def grad_reverse(x: torch.FloatTensor, scale: Optional[torch.FloatTensor] = None):
     if scale is None:
         scale = torch.ones_like(x)
+    if not isinstance(scale, torch.Tensor):
+        scale = torch.ones_like(x) * scale
     return GradientReverse.apply(x, scale)
 
 
@@ -136,6 +138,10 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
 
         self.generate_masking_on_train = config.generate_masking_on_train
         self.generate_masking_on_eval = config.generate_masking_on_eval
+
+        self.lambda_mask_loss = config.lambda_mask_loss
+        self.lambda_adv_gradient = config.lambda_adv_gradient
+        self.p_mask_target = config.p_mask_target
 
         self.albert = AlbertModel(config)
         self.predictions = AlbertMLMHead(config)
@@ -230,6 +236,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
 
+        loss_mask = 0.0
         if (self.training and self.generate_masking_on_train) or (not self.training and self.generate_masking_on_eval):
             #if masked_lm_labels is not None:
             #    # this spams the console...
@@ -259,23 +266,31 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 0.0
 
             # index == 1 indicates masking
-            to_mask = hard[:, :, 1].detach().bool()
+            to_mask = hard[:, :, 1]
+            to_mask[mask_padding] = 0.0
+
+            to_mask_not = hard[:, :, 0]
+            to_mask_not[mask_padding] = 0.0
+
             # calculate amount of
-            n_mask = to_mask.int().sum()
-            n_not_mask = (~to_mask).int().sum() - mask_padding.int().sum()
-            p_mask = n_mask.float() / (n_mask + n_not_mask)
+            n_mask = to_mask.sum()
+            n_mask_not = to_mask_not.sum()
+            p_mask = n_mask.float() / (n_mask + n_mask_not)
+
+            loss_mask = (p_mask - self.p_mask_target) * (p_mask - self.p_mask_target)
+            loss_mask *= self.lambda_mask_loss
 
             # Apply gradient inversion. Scale by inverted amount of masked tokens:
             # As more tokens are masked, as less this is a good signal.
             # Or: High gradients from _few_ masked tokens are better.
-            hard = grad_reverse(hard, scale=1.0 - p_mask)
+            hard = grad_reverse(hard, scale=self.lambda_adv_gradient)
 
             # select mask or real input depending on "hard softmax"
             embedding_output = (embedding_choice * hard.unsqueeze(dim=-1)).sum(dim=2)
 
             # do not calculate loss for not-masked tokens by setting labels to ignore_index
             masked_lm_labels = input_ids.clone()
-            masked_lm_labels[~to_mask] = -100     # CrossEntropyLoss ignore_index
+            masked_lm_labels[~to_mask.bool()] = -100     # CrossEntropyLoss ignore_index
 
         # default language masking functionality (see Albert model)
         outputs = self.albert(
@@ -294,7 +309,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         if masked_lm_labels is not None:
             loss_fct = CrossEntropyLoss()
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            outputs = (masked_lm_loss,) + outputs + (masked_lm_labels,)
+            outputs = (masked_lm_loss + loss_mask,) + outputs + (masked_lm_labels,)
 
         return outputs
 
