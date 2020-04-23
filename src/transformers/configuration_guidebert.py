@@ -15,7 +15,6 @@
 # limitations under the License.
 """ GUIDEBERT model configuration """
 
-from .configuration_utils import PretrainedConfig
 from .configuration_albert import AlbertConfig, ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
 
 
@@ -26,7 +25,7 @@ GUIDEBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
 
 class GuideBertConfig(AlbertConfig):
     r"""
-        This is the configuration class to store the configuration of an :class:`~transformers.GuidebertModel`.
+        This is the configuration class to store the configuration of an :class:`~transformers.GuideBertModel`.
         It is used to instantiate an GUIDEBERT model according to the specified arguments, defining the model
         architecture. Instantiating a configuration with the defaults will yield a similar configuration to that of
         the GUIDEBERT `xxlarge <https://huggingface.co/albert-xxlarge-v2>`__ architecture.
@@ -39,7 +38,7 @@ class GuideBertConfig(AlbertConfig):
         Args:
             vocab_size (:obj:`int`, optional, defaults to 30000):
                 Vocabulary size of the GUIDEBERT model. Defines the different tokens that
-                can be represented by the `inputs_ids` passed to the forward method of :class:`~transformers.GuidebertModel`.
+                can be represented by the `inputs_ids` passed to the forward method of :class:`~transformers.GuideBertModel`.
             embedding_size (:obj:`int`, optional, defaults to 128):
                 Dimensionality of vocabulary embeddings.
             hidden_size (:obj:`int`, optional, defaults to 4096):
@@ -65,7 +64,7 @@ class GuideBertConfig(AlbertConfig):
                 The maximum sequence length that this model might ever be used with. Typically set this to something
                 large (e.g., 512 or 1024 or 2048).
             type_vocab_size (:obj:`int`, optional, defaults to 2):
-                The vocabulary size of the `token_type_ids` passed into :class:`~transformers.GuidebertModel`.
+                The vocabulary size of the `token_type_ids` passed into :class:`~transformers.GuideBertModel`.
             initializer_range (:obj:`float`, optional, defaults to 0.02):
                 The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
             layer_norm_eps (:obj:`float`, optional, defaults to 1e-12):
@@ -75,19 +74,19 @@ class GuideBertConfig(AlbertConfig):
 
         Example::
 
-            from transformers import GuidebertConfig, GuidebertModel
+            from transformers import GuideBertConfig, GuideBertModel
             # Initializing an GUIDEBERT-xxlarge style configuration
-            albert_xxlarge_configuration = GuidebertConfig()
+            albert_xxlarge_configuration = GuideBertConfig()
 
             # Initializing an GUIDEBERT-base style configuration
-            albert_base_configuration = GuidebertConfig(
+            albert_base_configuration = GuideBertConfig(
                 hidden_size=768,
                 num_attention_heads=12,
                 intermediate_size=3072,
             )
 
             # Initializing a model from the GUIDEBERT-base style configuration
-            model = GuidebertModel(albert_xxlarge_configuration)
+            model = GuideBertModel(albert_xxlarge_configuration)
 
             # Accessing the model configuration
             configuration = model.config
@@ -99,3 +98,11 @@ class GuideBertConfig(AlbertConfig):
 
     pretrained_config_archive_map = GUIDEBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
     model_type = "guidebert"
+
+    def __init__(
+        self,
+        mask_token_id=4,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.mask_token_id = mask_token_id

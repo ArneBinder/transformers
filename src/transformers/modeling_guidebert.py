@@ -19,13 +19,12 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.nn import CrossEntropyLoss, MSELoss
+from torch.nn import CrossEntropyLoss
 from torch.nn.functional import gumbel_softmax
 
-from .modeling_albert import AlbertModel, AlbertPreTrainedModel, ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP, \
+from .modeling_albert import AlbertModel, AlbertPreTrainedModel, AlbertMLMHead, ALBERT_PRETRAINED_MODEL_ARCHIVE_MAP, \
     AlbertForQuestionAnswering, AlbertForTokenClassification, AlbertForSequenceClassification
 from .configuration_guidebert import GuideBertConfig
-from .modeling_bert import ACT2FN
 from .file_utils import add_start_docstrings, add_start_docstrings_to_callable
 
 
@@ -115,30 +114,6 @@ GUIDEBERT_INPUTS_DOCSTRING = r"""
 """
 
 
-class GuidebertMLMHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.LayerNorm = nn.LayerNorm(config.embedding_size)
-        self.bias = nn.Parameter(torch.zeros(config.vocab_size))
-        self.dense = nn.Linear(config.hidden_size, config.embedding_size)
-        self.decoder = nn.Linear(config.embedding_size, config.vocab_size)
-        self.activation = ACT2FN[config.hidden_act]
-
-        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
-        self.decoder.bias = self.bias
-
-    def forward(self, hidden_states):
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.activation(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states)
-        hidden_states = self.decoder(hidden_states)
-
-        prediction_scores = hidden_states
-
-        return prediction_scores
-
-
 @add_start_docstrings(
     "The bare GuideBert (Albert) Model transformer outputting raw hidden-states without any specific head on top.",
     GUIDEBERT_START_DOCSTRING,
@@ -156,12 +131,11 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        # TODO: get these from tokenizer!
-        self.mask_token_id = 4
-        self.pad_token_id = 0
+        self.mask_token_id = config.mask_token_id
+        self.pad_token_id = config.pad_token_id
 
         self.albert = AlbertModel(config)
-        self.predictions = GuidebertMLMHead(config)
+        self.predictions = AlbertMLMHead(config)
 
         self.classifier = nn.Linear(config.hidden_size, 2)
 
@@ -193,7 +167,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             labels in ``[0, ..., config.vocab_size]``
 
     Returns:
-        :obj:`tuple(torch.FloatTensor)` comprising various elements depending on the configuration (:class:`~transformers.GuidebertConfig`) and inputs:
+        :obj:`tuple(torch.FloatTensor)` comprising various elements depending on the configuration (:class:`~transformers.GuideBertConfig`) and inputs:
         loss (`optional`, returned when ``masked_lm_labels`` is provided) ``torch.FloatTensor`` of shape ``(1,)``:
             Masked language modeling loss.
         prediction_scores (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, config.vocab_size)`)
@@ -212,11 +186,11 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
 
     Example::
 
-        from transformers import GuidebertTokenizer, GuidebertForMaskedLM
+        from transformers import GuideBertTokenizer, GuideBertForMaskedLM
         import torch
 
-        tokenizer = GuidebertTokenizer.from_pretrained('albert-base-v2')
-        model = GuidebertForMaskedLM.from_pretrained('albert-base-v2')
+        tokenizer = GuideBertTokenizer.from_pretrained('albert-base-v2')
+        model = GuideBertForMaskedLM.from_pretrained('albert-base-v2')
         input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
         outputs = model(input_ids, masked_lm_labels=input_ids)
         loss, prediction_scores = outputs[:2]
@@ -228,7 +202,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
 
-        # for training, generate masks as GuideBert from input_ids
+        # TODO: check/rework this condition!
+        # For training, generate masks as GuideBert from input_ids.
+        # This allows for default mask generation during evaluation.
         if self.training:
             input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
             embedding_mask = self.albert.embeddings(
