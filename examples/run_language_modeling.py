@@ -338,7 +338,14 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: PreTrainedToke
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
-            epoch_iterator.set_description(f"Iteration [loss={loss.item():.4f}]")
+            if args.model_type == 'guidebert':
+                masked_lm_labels = outputs[-1]
+                n_keep = ((masked_lm_labels == -100) & (inputs != tokenizer.mask_token_id)).int().sum().item()
+                n_mod = (masked_lm_labels != -100).int().sum().item()
+                p_mod = n_mod / (n_keep + n_mod)
+                epoch_iterator.set_description(f"Iteration [loss={loss.item():.4f}, p_mod={p_mod:.4f}]")
+            else:
+                epoch_iterator.set_description(f"Iteration [loss={loss.item():.4f}]")
 
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -433,6 +440,8 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
     eval_loss = 0.0
+    eval_n_mod = 0
+    eval_n_keep = 0
     nb_eval_steps = 0
     model.eval()
 
@@ -445,12 +454,21 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
             outputs = model(inputs, masked_lm_labels=labels) if args.mlm else model(inputs, labels=labels)
             lm_loss = outputs[0]
             eval_loss += lm_loss.mean().item()
+
+            if args.model_type == 'guidebert':
+                masked_lm_labels = outputs[-1]
+                eval_n_keep += (masked_lm_labels == -100 & inputs != tokenizer.mask_token_id).int().sum().item()
+                eval_n_mod += (masked_lm_labels != -100).int().sum().item()
         nb_eval_steps += 1
 
     eval_loss = eval_loss / nb_eval_steps
     perplexity = torch.exp(torch.tensor(eval_loss))
 
     result = {"perplexity": perplexity}
+    if args.model_type == 'guidebert':
+        result['n_keep'] = eval_n_keep
+        result['n_mod'] = eval_n_mod
+        result['p_mod'] = eval_n_mod / (eval_n_keep + eval_n_mod)
 
     output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
     with open(output_eval_file, "w") as writer:

@@ -294,7 +294,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         if masked_lm_labels is not None:
             loss_fct = CrossEntropyLoss()
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            outputs = (masked_lm_loss,) + outputs
+            outputs = (masked_lm_loss,) + outputs + (masked_lm_labels,)
 
         return outputs
 
