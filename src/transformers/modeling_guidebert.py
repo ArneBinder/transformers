@@ -183,7 +183,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         position_ids=None,
         head_mask=None,
         inputs_embeds=None,
-        labels=None,
+        masked_lm_labels=None
     ):
         r"""
         masked_lm_labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`, defaults to :obj:`None`):
@@ -228,8 +228,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
 
-        # trigger mask generation, iff input_ids are also provided as labels
-        if labels is not None and labels is input_ids:
+        # for training, generate masks as GuideBert from input_ids
+        if self.training:
             input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
             embedding_mask = self.albert.embeddings(
                 input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
@@ -269,8 +269,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             embedding_output = (embedding_choice * hard.unsqueeze(dim=-1)).sum(dim=2)
 
             # do not calculate loss for not-masked tokens by setting labels to ignore_index
-            labels = labels.clone()
-            labels[~to_mask] = -100     # CrossEntropyLoss ignore_index
+            masked_lm_labels = input_ids.clone()
+            masked_lm_labels[~to_mask] = -100     # CrossEntropyLoss ignore_index
 
         # default language masking functionality (see Albert model)
         outputs = self.albert(
@@ -286,9 +286,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         prediction_scores = self.predictions(sequence_output)
 
         outputs = (prediction_scores,) + outputs[2:]  # Add hidden states and attention if they are here
-        if labels is not None:
+        if masked_lm_labels is not None:
             loss_fct = CrossEntropyLoss()
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
+            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
             outputs = (masked_lm_loss,) + outputs
 
         return outputs
