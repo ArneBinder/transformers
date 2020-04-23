@@ -457,7 +457,7 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
 
             if args.model_type == 'guidebert':
                 masked_lm_labels = outputs[-1]
-                eval_n_keep += (masked_lm_labels == -100 & inputs != tokenizer.mask_token_id).int().sum().item()
+                eval_n_keep += ((masked_lm_labels == -100) & (inputs != tokenizer.mask_token_id)).int().sum().item()
                 eval_n_mod += (masked_lm_labels != -100).int().sum().item()
         nb_eval_steps += 1
 
