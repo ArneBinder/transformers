@@ -144,6 +144,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         self.p_mask_target = config.p_mask_target
 
         self.albert = AlbertModel(config)
+        self.albert_adv = AlbertModel(config)
+        self.albert_adv_loaded = False
         self.predictions = AlbertMLMHead(config)
 
         self.classifier = nn.Linear(config.hidden_size, 2)
@@ -242,14 +244,17 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             #    # this spams the console...
             #    logger.warning(f'GuideBert generates masking during {"training" if self.training else "evaluation"}, '
             #                   f'but masked_lm_labels is provided (will be overridden)!')
+            if not self.albert_adv_loaded:
+                self.albert_adv.load_state_dict(self.albert.state_dict())
+                self.albert_adv_loaded = True
             input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
-            embedding_mask = self.albert.embeddings(
+            embedding_mask = self.albert_adv.embeddings(
                 input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
             )
             embedding_choice = torch.stack((embedding_output, embedding_mask), dim=2)
             mask_padding = input_ids == self.pad_token_id
 
-            outputs = self.albert(
+            outputs = self.albert_adv(
                 input_ids=None,
                 attention_mask=attention_mask,
                 token_type_ids=token_type_ids,
