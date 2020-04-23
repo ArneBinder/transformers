@@ -250,8 +250,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             hard = gumbel_softmax(logits=logits, hard=True)
 
             # do not allow padding positions for masking
-            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).unsqueeze(0).unsqueeze(0)] = 1.0
-            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True]).unsqueeze(0).unsqueeze(0)] = 0.0
+            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 1.0
+            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 0.0
 
             # index == 1 indicates masking
             to_mask = hard[:, :, 1].detach().bool()
