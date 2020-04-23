@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """PyTorch GUIDEBERT model. """
-
+import copy
 import logging
 from typing import Optional
 
@@ -245,7 +245,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             #    logger.warning(f'GuideBert generates masking during {"training" if self.training else "evaluation"}, '
             #                   f'but masked_lm_labels is provided (will be overridden)!')
             if not self.albert_adv_loaded:
-                self.albert_adv.load_state_dict(self.albert.state_dict())
+                self.albert_adv.load_state_dict(copy.deepcopy(self.albert.state_dict()))
                 self.albert_adv_loaded = True
             input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
             embedding_mask = self.albert_adv.embeddings(
