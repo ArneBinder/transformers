@@ -134,6 +134,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         self.mask_token_id = config.mask_token_id
         self.pad_token_id = config.pad_token_id
 
+        self.generate_masking_on_train = config.generate_masking_on_train
+        self.generate_masking_on_eval = config.generate_masking_on_eval
+
         self.albert = AlbertModel(config)
         self.predictions = AlbertMLMHead(config)
 
@@ -189,12 +192,20 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         from transformers import GuideBertTokenizer, GuideBertForMaskedLM
         import torch
 
-        tokenizer = GuideBertTokenizer.from_pretrained('albert-base-v2')
-        model = GuideBertForMaskedLM.from_pretrained('albert-base-v2')
+        tokenizer = GuideBertTokenizer.from_pretrained('guidebert-albert-base-v2')
+        model = GuideBertForMaskedLM.from_pretrained('guidebert-albert-base-v2')
         input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
-        outputs = model(input_ids, masked_lm_labels=input_ids)
+
+        # GuideBert defaults to generate masks for training...
+        model.train()
+        outputs = model(input_ids)
         loss, prediction_scores = outputs[:2]
 
+        # ...but assumes masked_lm_labels for evaluation. The boolean config entries generate_masking_on_train and
+        # generate_masking_on_eval allow to change this behavior.
+        model.eval()
+        outputs = model(input_ids, masked_lm_labels=input_ids)
+        loss, prediction_scores = outputs[:2]
         """
 
         # get initial embeddings
@@ -202,10 +213,11 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
 
-        # TODO: check/rework this condition!
-        # For training, generate masks as GuideBert from input_ids.
-        # This allows for default mask generation during evaluation.
-        if self.training:
+        if (self.training and self.generate_masking_on_train) or (not self.training and self.generate_masking_on_eval):
+            #if masked_lm_labels is not None:
+            #    # this spams the console...
+            #    logger.warning(f'GuideBert generates masking during {"training" if self.training else "evaluation"}, '
+            #                   f'but masked_lm_labels is provided (will be overridden)!')
             input_ids_mask = torch.ones_like(input_ids) * self.mask_token_id
             embedding_mask = self.albert.embeddings(
                 input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None

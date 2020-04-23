@@ -102,7 +102,14 @@ class GuideBertConfig(AlbertConfig):
     def __init__(
         self,
         mask_token_id=4,
+        # TODO: check/rework this condition!
+        # Only for training, generate masks as GuideBert from input_ids.
+        # This allows for default mask generation during evaluation.
+        generate_masking_on_train=True,
+        generate_masking_on_eval=False,
         **kwargs
     ):
         super().__init__(**kwargs)
         self.mask_token_id = mask_token_id
+        self.generate_masking_on_train = generate_masking_on_train
+        self.generate_masking_on_eval = generate_masking_on_eval
