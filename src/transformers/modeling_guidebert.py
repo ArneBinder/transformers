@@ -206,6 +206,23 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         model.eval()
         outputs = model(input_ids, masked_lm_labels=input_ids)
         loss, prediction_scores = outputs[:2]
+
+
+        ## For a full training example, use (taken and adapted from
+        ##  https://github.com/huggingface/transformers/tree/master/examples#robertabert-and-masked-language-modeling):
+        #
+        # export TRAIN_FILE=/path/to/dataset/wiki.train.raw
+        # export TEST_FILE=/path/to/dataset/wiki.test.raw
+        #
+        # python run_language_modeling.py \
+        #     --output_dir=output \
+        #     --model_type=guidebert \
+        #     --model_name_or_path=guidebert-albert-base-v2 \
+        #     --do_train \
+        #     --train_data_file=$TRAIN_FILE \
+        #     --do_eval \
+        #     --eval_data_file=$TEST_FILE \
+        #     --mlm
         """
 
         # get initial embeddings
