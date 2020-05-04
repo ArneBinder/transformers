@@ -15,11 +15,18 @@
 # limitations under the License.
 """ GUIDEBERT model configuration """
 
-from .configuration_albert import AlbertConfig, ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
+from .configuration_albert import AlbertConfig
 
 
 GUIDEBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    f"guidebert-{k}": v for k, v in ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP.items()
+    "guidebert-albert-base-v1": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-base-v1-config.json",
+    "guidebert-albert-large-v1": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-large-v1-config.json",
+    "guidebert-albert-xlarge-v1": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-xlarge-v1-config.json",
+    "guidebert-albert-xxlarge-v1": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-xxlarge-v1-config.json",
+    "guidebert-albert-base-v2": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-base-v2-config.json",
+    "guidebert-albert-large-v2": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-large-v2-config.json",
+    "guidebert-albert-xlarge-v2": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-xlarge-v2-config.json",
+    "guidebert-albert-xxlarge-v2": "https://raw.githubusercontent.com/ArneBinder/GuideBert/master/transformers/bert/guidebert-albert-xxlarge-v2-config.json",
 }
 
 
@@ -110,6 +117,9 @@ class GuideBertConfig(AlbertConfig):
         lambda_mask_loss=0.5,
         lambda_adv_gradient=1.0,
         p_mask_target=0.2,
+        # https://arxiv.org/pdf/1611.01144.pdf proposes values in {1e−5,1e−4}
+        # and uses 3e-5 in "4.3 Generative Semi-Supervised-Classification".
+        tau_r=3e-5,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -119,3 +129,4 @@ class GuideBertConfig(AlbertConfig):
         self.lambda_mask_loss = lambda_mask_loss
         self.lambda_adv_gradient = lambda_adv_gradient
         self.p_mask_target = p_mask_target
+        self.tau_r = tau_r
