@@ -143,10 +143,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         self.lambda_mask_loss = config.lambda_mask_loss
         self.lambda_adv_gradient = config.lambda_adv_gradient
         self.p_mask_target = config.p_mask_target
+        self.tau_r = config.tau_r
 
-        self.tau_r = 3e-5
-        self.tau = None
-        self.update_tau(0)
+        self.t = 0
 
         self.albert = AlbertModel(config)
         self.predictions = AlbertMLMHead(config)
@@ -162,8 +161,15 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
     def get_output_embeddings(self):
         return self.predictions.decoder
 
-    def update_tau(self, t):
-        self.tau = max(0.5, exp(-self.tau_r * t))
+    def get_tau(self):
+        if self.training:
+            # use schedule of https://arxiv.org/pdf/1611.01144.pdf
+            tau = max(0.5, exp(-self.tau_r * self.t))
+            self.t += 1
+            return tau
+        else:
+            # in eval mode, use categorical distribution (tau -> 0)
+            return 0.01
 
     @add_start_docstrings_to_callable(GUIDEBERT_INPUTS_DOCSTRING)
     def forward(
@@ -267,7 +273,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             )
             sequence_output = outputs[0]
             logits = self.classifier(sequence_output)
-            hard = gumbel_softmax(logits=logits, tau=self.tau, hard=True)
+            # WARNING: tau starts from 1.0 when training is (re-)started, also if model is loaded from checkpoint!
+            tau = self.get_tau()
+            hard = gumbel_softmax(logits=logits, tau=tau, hard=True)
 
             # do not allow padding positions for masking
             hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 1.0
