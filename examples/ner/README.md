@@ -64,7 +64,6 @@ To start training, just run:
 
 ```bash
 python3 run_ner.py --data_dir ./ \
---model_type bert \
 --labels ./labels.txt \
 --model_name_or_path $BERT_MODEL \
 --output_dir $OUTPUT_DIR \
@@ -79,6 +78,29 @@ python3 run_ner.py --data_dir ./ \
 ```
 
 If your GPU supports half-precision training, just add the `--fp16` flag. After training, the model will be both evaluated on development and test datasets.
+
+### JSON-based configuration file
+
+Instead of passing all parameters via commandline arguments, the `run_ner.py` script also supports reading parameters from a json-based configuration file:
+
+```json
+{
+    "data_dir": ".",
+    "labels": "./labels.txt",
+    "model_name_or_path": "bert-base-multilingual-cased",
+    "output_dir": "germeval-model",
+    "max_seq_length": 128,
+    "num_train_epochs": 3,
+    "per_gpu_train_batch_size": 32,
+    "save_steps": 750,
+    "seed": 1,
+    "do_train": true,
+    "do_eval": true,
+    "do_predict": true
+}
+```
+
+It must be saved with a `.json` extension and can be used by running `python3 run_ner.py config.json`.
 
 #### Evaluation
 
@@ -125,7 +147,6 @@ To start training, just run:
 
 ```bash
 python3 run_tf_ner.py --data_dir ./ \
---model_type bert \
 --labels ./labels.txt \
 --model_name_or_path $BERT_MODEL \
 --output_dir $OUTPUT_DIR \

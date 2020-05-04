@@ -67,12 +67,12 @@ extras["mecab"] = ["mecab-python3"]
 extras["sklearn"] = ["scikit-learn"]
 extras["tf"] = ["tensorflow"]
 extras["tf-cpu"] = ["tensorflow-cpu"]
-extras["torch"] = ["torch"]
+extras["torch"] = ["torch==1.4.0"]
 
 extras["serving"] = ["pydantic", "uvicorn", "fastapi", "starlette"]
 extras["all"] = extras["serving"] + ["tensorflow", "torch"]
 
-extras["testing"] = ["pytest", "pytest-xdist"]
+extras["testing"] = ["pytest", "pytest-xdist", "timeout-decorator"]
 extras["docs"] = ["recommonmark", "sphinx", "sphinx-markdown-tables", "sphinx-rtd-theme"]
 extras["quality"] = [
     "black",
@@ -96,11 +96,9 @@ setup(
     packages=find_packages("src"),
     install_requires=[
         "numpy",
-        "tokenizers == 0.7.0rc3",
+        "tokenizers == 0.7.0",
         # dataclasses for Python versions that don't have it
         "dataclasses;python_version<'3.7'",
-        # accessing files from S3 directly
-        "boto3",
         # filesystem locks e.g. to prevent parallel downloads
         "filelock",
         # for downloading models over HTTPS

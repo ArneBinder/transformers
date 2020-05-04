@@ -35,8 +35,8 @@ class GLUETransformer(BaseTransformer):
     def training_step(self, batch, batch_idx):
         inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
 
-        if self.hparams.model_type != "distilbert":
-            inputs["token_type_ids"] = batch[2] if self.hparams.model_type in ["bert", "xlnet", "albert"] else None
+        if self.config.model_type != "distilbert":
+            inputs["token_type_ids"] = batch[2] if self.config.model_type in ["bert", "xlnet", "albert"] else None
 
         outputs = self(**inputs)
         loss = outputs[0]
@@ -63,12 +63,8 @@ class GLUETransformer(BaseTransformer):
                     examples,
                     self.tokenizer,
                     max_length=args.max_seq_length,
-                    task=args.task,
                     label_list=self.labels,
                     output_mode=args.glue_output_mode,
-                    pad_on_left=bool(args.model_type in ["xlnet"]),  # pad on the left for xlnet
-                    pad_token=self.tokenizer.convert_tokens_to_ids([self.tokenizer.pad_token])[0],
-                    pad_token_segment_id=self.tokenizer.pad_token_type_id,
                 )
                 logger.info("Saving features into cached file %s", cached_features_file)
                 torch.save(features, cached_features_file)
@@ -99,8 +95,8 @@ class GLUETransformer(BaseTransformer):
     def validation_step(self, batch, batch_idx):
         inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
 
-        if self.hparams.model_type != "distilbert":
-            inputs["token_type_ids"] = batch[2] if self.hparams.model_type in ["bert", "xlnet", "albert"] else None
+        if self.config.model_type != "distilbert":
+            inputs["token_type_ids"] = batch[2] if self.config.model_type in ["bert", "xlnet", "albert"] else None
 
         outputs = self(**inputs)
         tmp_eval_loss, logits = outputs[:2]
@@ -128,7 +124,7 @@ class GLUETransformer(BaseTransformer):
         ret["log"] = results
         return ret, preds_list, out_label_list
 
-    def validation_end(self, outputs: list) -> dict:
+    def validation_epoch_end(self, outputs: list) -> dict:
         ret, preds, targets = self._eval_end(outputs)
         logs = ret["log"]
         return {"val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
@@ -183,7 +179,7 @@ if __name__ == "__main__":
 
     # If output_dir not provided, a folder will be generated in pwd
     if args.output_dir is None:
-        args.output_dir = os.path.join("./results", f"{args.task}_{args.model_type}_{time.strftime('%Y%m%d_%H%M%S')}",)
+        args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
 
     model = GLUETransformer(args)
