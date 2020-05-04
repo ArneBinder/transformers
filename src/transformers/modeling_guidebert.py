@@ -16,6 +16,7 @@
 
 import logging
 from typing import Optional
+from math import exp
 
 import torch
 import torch.nn as nn
@@ -143,6 +144,10 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         self.lambda_adv_gradient = config.lambda_adv_gradient
         self.p_mask_target = config.p_mask_target
 
+        self.tau_r = 3e-5
+        self.tau = None
+        self.update_tau(0)
+
         self.albert = AlbertModel(config)
         self.predictions = AlbertMLMHead(config)
 
@@ -156,6 +161,9 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
 
     def get_output_embeddings(self):
         return self.predictions.decoder
+
+    def update_tau(self, t):
+        self.tau = max(0.5, exp(-self.tau_r * t))
 
     @add_start_docstrings_to_callable(GUIDEBERT_INPUTS_DOCSTRING)
     def forward(
@@ -259,7 +267,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             )
             sequence_output = outputs[0]
             logits = self.classifier(sequence_output)
-            hard = gumbel_softmax(logits=logits, hard=True)
+            hard = gumbel_softmax(logits=logits, tau=self.tau, hard=True)
 
             # do not allow padding positions for masking
             hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 1.0
