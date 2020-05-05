@@ -303,6 +303,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             n_mlm = to_mlm.sum(dim=1)
             p_mlm = n_mlm.float() / (n_mlm.sum(dim=-1) + n_mlm_not).unsqueeze(-1)
             # calculate loss for each type (mask/swap/keep) by comparing with target portions
+            if self.portions_mlm_target.device != p_mlm.device:
+                self.portions_mlm_target.to(p_mlm.device)
             loss_mask = (p_mlm - self.portions_mlm_target).pow(2).sum()
             loss_mask *= self.lambda_mask_loss
 
