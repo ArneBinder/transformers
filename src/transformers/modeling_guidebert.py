@@ -142,7 +142,11 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
 
         self.lambda_mask_loss = config.lambda_mask_loss
         self.lambda_adv_gradient = config.lambda_adv_gradient
-        self.p_mask_target = config.p_mask_target
+        self.mlm_probability = config.mlm_probability
+        # index 0 -> mask, 1 -> swap, 2 -> keep (but calculate loss for)
+        self.portions_mlm_target = torch.FloatTensor([self.mlm_probability * 0.8,
+                                                      self.mlm_probability * 0.1,
+                                                      self.mlm_probability * 0.1])
         self.tau_r = config.tau_r
 
         self.t = 0
@@ -150,7 +154,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
         self.albert = AlbertModel(config)
         self.predictions = AlbertMLMHead(config)
 
-        self.classifier = nn.Linear(config.hidden_size, 2)
+        # index 0 -> original embedding, 1 -> masking, 2 -> swapped embedding, 3 -> keep (but calculate loss)
+        self.classifier = nn.Linear(config.hidden_size, 4)
 
         self.init_weights()
         self.tie_weights()
@@ -260,10 +265,15 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             embedding_mask = self.albert.embeddings(
                 input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
             )
+            vocab_size = self.config.vocab_size
+            input_ids_swap = torch.randint(vocab_size, input_ids.shape, dtype=torch.long, device=input_ids.device)
+            embedding_swap = self.albert.embeddings(
+                input_ids_swap, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
+            )
+            # first position is original input, second is masked, third is swap
+            embedding_choice = torch.stack((embedding_output, embedding_mask, embedding_swap), dim=2)
 
-            # first position is original input, second is masked
-            embedding_choice = torch.stack((embedding_output, embedding_mask), dim=2)
-            mask_padding = input_ids == self.pad_token_id
+            mask_padding = (input_ids != self.pad_token_id)
 
             outputs = self.albert(
                 input_ids=None,
@@ -279,23 +289,21 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             tau = self.get_tau()
             hard = gumbel_softmax(logits=logits, tau=tau, hard=True)
 
-            # do not allow padding positions for masking
-            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 1.0
-            hard[mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 0.0
+            # do not allow padding positions for masking: set these to take original embeddings
+            hard[~mask_padding.unsqueeze(-1) * torch.BoolTensor([True, False, False, False]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 1.0
+            hard[~mask_padding.unsqueeze(-1) * torch.BoolTensor([False, True, True, True]).to(mask_padding.device).unsqueeze(0).unsqueeze(0)] = 0.0
 
-            # index == 1 indicates masking
-            to_mask = hard[:, :, 1]
-            to_mask[mask_padding] = 0.0
+            # index == 0 indicates no masking/swapping/keeping
+            to_mlm_not = hard[:, :, 0] * mask_padding
+            to_mlm = hard[:, :, 1:]
 
-            to_mask_not = hard[:, :, 0]
-            to_mask_not[mask_padding] = 0.0
-
-            # calculate amount of
-            n_mask = to_mask.sum()
-            n_mask_not = to_mask_not.sum()
-            p_mask = n_mask.float() / (n_mask + n_mask_not)
-
-            loss_mask = (p_mask - self.p_mask_target).pow(2)
+            # calculate amount of not mlm positions
+            n_mlm_not = to_mlm_not.sum(dim=1)
+            # calculate amount of mlm positions. keep last dim (if to mask, swap, or keep)
+            n_mlm = to_mlm.sum(dim=1)
+            p_mlm = n_mlm.float() / (n_mlm.sum(dim=-1) + n_mlm_not).unsqueeze(-1)
+            # calculate loss for each type (mask/swap/keep) by comparing with target portions
+            loss_mask = (p_mlm - self.portions_mlm_target).pow(2).sum()
             loss_mask *= self.lambda_mask_loss
 
             # Apply gradient inversion. Scale by inverted amount of masked tokens:
@@ -303,12 +311,19 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             # Or: High gradients from _few_ masked tokens are better.
             hard = grad_reverse(hard, scale=self.lambda_adv_gradient)
 
-            # select mask or real input depending on "hard softmax"
-            embedding_output = (embedding_choice * hard.unsqueeze(dim=-1)).sum(dim=2)
+            # select mask or real input depending on "hard softmax".
+            selector = hard[:, :, :-1]
+            # last entry also indicates to keep original input (but we need used it to set indices for loss calculation)
+            selector[:, :, 0] += hard[:, :, -1]
+            assert torch.equal(selector.sum(-1), torch.ones_like(input_ids, dtype=selector.dtype)), \
+                'classifier produced multiple mlm actions (mask/swap/keep) for certain positions'
+            embedding_output = (embedding_choice * selector.unsqueeze(dim=-1)).sum(dim=2)
 
             # do not calculate loss for not-masked tokens by setting labels to ignore_index
             masked_lm_labels = input_ids.clone()
-            masked_lm_labels[~to_mask.bool()] = -100     # CrossEntropyLoss ignore_index
+            to_mlm_merged = to_mlm.sum(dim=-1)
+
+            masked_lm_labels[~to_mlm_merged.bool()] = -100     # CrossEntropyLoss ignore_index
 
         # default language masking functionality (see Albert model)
         outputs = self.albert(

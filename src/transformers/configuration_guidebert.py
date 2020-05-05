@@ -113,10 +113,10 @@ class GuideBertConfig(AlbertConfig):
         # If enabled only for training, generate masks as GuideBert from input_ids.
         # This would allow for default mask generation during evaluation.
         generate_masking_on_train=True,
-        generate_masking_on_eval=True,
+        generate_masking_on_eval=False,
         lambda_mask_loss=0.5,
         lambda_adv_gradient=1.0,
-        p_mask_target=0.2,
+        mlm_probability=0.15,
         # https://arxiv.org/pdf/1611.01144.pdf proposes values in {1e−5,1e−4}
         # and uses 3e-5 in "4.3 Generative Semi-Supervised-Classification".
         tau_r=3e-5,
@@ -128,5 +128,5 @@ class GuideBertConfig(AlbertConfig):
         self.generate_masking_on_eval = generate_masking_on_eval
         self.lambda_mask_loss = lambda_mask_loss
         self.lambda_adv_gradient = lambda_adv_gradient
-        self.p_mask_target = p_mask_target
+        self.mlm_probability = mlm_probability
         self.tau_r = tau_r
