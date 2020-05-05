@@ -369,6 +369,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             # Apply gradient inversion. Scale by inverted amount of masked tokens:
             # As more tokens are masked, as less this is a good signal.
             # Or: High gradients from _few_ masked tokens are better.
+            # NOTE: CURRENTLY, WE DO NOT DO THAT!
+            # Instead use fixed scale in addition with loss_mask to guide number of masked tokens to BERT values.
             hard = grad_reverse(hard, scale=self.lambda_adv_gradient)
 
             # select mask or real input depending on "hard softmax".
