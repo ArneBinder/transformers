@@ -260,6 +260,8 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             embedding_mask = self.albert.embeddings(
                 input_ids_mask, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=None
             )
+
+            # first position is original input, second is masked
             embedding_choice = torch.stack((embedding_output, embedding_mask), dim=2)
             mask_padding = input_ids == self.pad_token_id
 
@@ -293,7 +295,7 @@ class GuideBertForMaskedLM(GuideBertPreTrainedModel):
             n_mask_not = to_mask_not.sum()
             p_mask = n_mask.float() / (n_mask + n_mask_not)
 
-            loss_mask = (p_mask - self.p_mask_target) * (p_mask - self.p_mask_target)
+            loss_mask = (p_mask - self.p_mask_target).pow(2)
             loss_mask *= self.lambda_mask_loss
 
             # Apply gradient inversion. Scale by inverted amount of masked tokens:
