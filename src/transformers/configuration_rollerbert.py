@@ -20,7 +20,8 @@ from .configuration_utils import PretrainedConfig
 from .configuration_albert import AlbertConfig, ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP
 
 ROLLERBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-   f"rollerbert-{k}": v for k, v in ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP.items()
+   ## do not link here (use local config)
+   #f"rollerbert-{k}": v for k, v in ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP.items()
 }
 
 
