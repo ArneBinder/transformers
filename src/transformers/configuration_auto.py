@@ -128,6 +128,7 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("t5", "T5"),
         ("mobilebert", "MobileBERT"),
         ("distilbert", "DistilBERT"),
+        ("rollerbert", "RollerBERT"),
         ("albert", "ALBERT"),
         ("bert-generation", "Bert Generation"),
         ("camembert", "CamemBERT"),
