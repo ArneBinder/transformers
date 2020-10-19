@@ -100,6 +100,7 @@ TOKENIZER_MAPPING = OrderedDict(
         (T5Config, (T5Tokenizer, None)),
         (MobileBertConfig, (MobileBertTokenizer, MobileBertTokenizerFast)),
         (DistilBertConfig, (DistilBertTokenizer, DistilBertTokenizerFast)),
+        (RollerbertConfig, (RollerbertTokenizer, None)),
         (AlbertConfig, (AlbertTokenizer, None)),
         (CamembertConfig, (CamembertTokenizer, None)),
         (PegasusConfig, (PegasusTokenizer, None)),
