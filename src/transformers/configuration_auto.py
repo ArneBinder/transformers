@@ -92,7 +92,6 @@ CONFIG_MAPPING = OrderedDict(
         ("mobilebert", MobileBertConfig),
         ("distilbert", DistilBertConfig),
         ("rollerbert", RollerbertConfig,),
-        ('rollerbert', RollerbertConfig,),
         ("albert", AlbertConfig),
         ("bert-generation", BertGenerationConfig),
         ("camembert", CamembertConfig),
