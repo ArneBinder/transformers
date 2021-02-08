@@ -145,6 +145,18 @@ class DataTrainingArguments:
             "If False, will pad the samples dynamically when batching to the maximum length in the batch."
         },
     )
+    max_examples_train: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "If set, use only this first number of instances for training."
+        },
+    )
+    max_examples_validate: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "If set, use only this first number of instances for validation."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -227,6 +239,19 @@ def main():
                 data_args.dataset_config_name,
                 split=f"train[{data_args.validation_split_percentage}%:]",
             )
+        if data_args.max_examples_train is not None:
+            datasets["train"] = load_dataset(
+                data_args.dataset_name,
+                data_args.dataset_config_name,
+                split=f"train[:{data_args.max_examples_train}]",
+            )
+        if data_args.max_examples_validate is not None:
+            datasets["validation"] = load_dataset(
+                data_args.dataset_name,
+                data_args.dataset_config_name,
+                split=f"validation[:{data_args.max_examples_validate}]",
+            )
+        
     else:
         data_files = {}
         if data_args.train_file is not None:
