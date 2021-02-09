@@ -55,7 +55,7 @@ from ...models.albert.modeling_albert import AlbertEmbeddings, AlbertTransformer
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "CBertConfig"
-_TOKENIZER_FOR_DOC = "CBertTokenizer"
+_TOKENIZER_FOR_DOC = "AlbertTokenizer"
 
 
 CBERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
