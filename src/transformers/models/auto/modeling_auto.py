@@ -32,6 +32,11 @@ from ..albert.modeling_albert import (
     AlbertForTokenClassification,
     AlbertModel,
 )
+from ..cbert.modeling_cbert import (
+    CBertForMaskedLM,
+    CBertForPreTraining,
+    CBertModel,
+)
 from ..bart.modeling_bart import (
     BartForConditionalGeneration,
     BartForQuestionAnswering,
@@ -221,6 +226,7 @@ from ..xlnet.modeling_xlnet import (
 )
 from .configuration_auto import (
     AlbertConfig,
+    CBertConfig,
     AutoConfig,
     BartConfig,
     BertConfig,
@@ -282,6 +288,7 @@ MODEL_MAPPING = OrderedDict(
         (BlenderbotConfig, BlenderbotModel),
         (DistilBertConfig, DistilBertModel),
         (AlbertConfig, AlbertModel),
+        (CBertConfig, CBertModel),
         (CamembertConfig, CamembertModel),
         (XLMRobertaConfig, XLMRobertaModel),
         (BartConfig, BartModel),
@@ -322,6 +329,7 @@ MODEL_FOR_PRETRAINING_MAPPING = OrderedDict(
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
         (AlbertConfig, AlbertForPreTraining),
+        (CBertConfig, CBertForPreTraining),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
         (BartConfig, BartForConditionalGeneration),
@@ -355,6 +363,7 @@ MODEL_WITH_LM_HEAD_MAPPING = OrderedDict(
         (T5Config, T5ForConditionalGeneration),
         (DistilBertConfig, DistilBertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
+        (CBertConfig, CBertForMaskedLM),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),
         (MarianConfig, MarianMTModel),
@@ -410,6 +419,7 @@ MODEL_FOR_MASKED_LM_MAPPING = OrderedDict(
         (LayoutLMConfig, LayoutLMForMaskedLM),
         (DistilBertConfig, DistilBertForMaskedLM),
         (AlbertConfig, AlbertForMaskedLM),
+        (CBertConfig, CBertForMaskedLM),
         (BartConfig, BartForConditionalGeneration),
         (CamembertConfig, CamembertForMaskedLM),
         (XLMRobertaConfig, XLMRobertaForMaskedLM),

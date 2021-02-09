@@ -19,6 +19,7 @@ from collections import OrderedDict
 
 from ...configuration_utils import PretrainedConfig
 from ..albert.configuration_albert import ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, AlbertConfig
+from ..cbert.configuration_cbert import CBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, CBertConfig
 from ..bart.configuration_bart import BART_PRETRAINED_CONFIG_ARCHIVE_MAP, BartConfig
 from ..bert.configuration_bert import BERT_PRETRAINED_CONFIG_ARCHIVE_MAP, BertConfig
 from ..bert_generation.configuration_bert_generation import BertGenerationConfig
@@ -120,6 +121,7 @@ CONFIG_MAPPING = OrderedDict(
         ("mobilebert", MobileBertConfig),
         ("distilbert", DistilBertConfig),
         ("albert", AlbertConfig),
+        ("cbert", CBertConfig),
         ("bert-generation", BertGenerationConfig),
         ("camembert", CamembertConfig),
         ("xlm-roberta", XLMRobertaConfig),
@@ -166,6 +168,7 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("mobilebert", "MobileBERT"),
         ("distilbert", "DistilBERT"),
         ("albert", "ALBERT"),
+        ("cbert", "CBERT"),
         ("bert-generation", "Bert Generation"),
         ("camembert", "CamemBERT"),
         ("xlm-roberta", "XLM-RoBERTa"),
