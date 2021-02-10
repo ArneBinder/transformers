@@ -19,6 +19,7 @@ from typing import Optional
 
 import torch
 
+from ...activations import ACT2FN
 from ...configuration_utils import PretrainedConfig
 from ...file_utils import add_start_docstrings, add_start_docstrings_to_model_forward, replace_return_docstrings
 from ...modeling_outputs import Seq2SeqLMOutput
@@ -32,6 +33,8 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "CBertConfig"
 
 CBERT_START_DOCSTRING = r"""
+    THIS IS OUTDATED!!!
+
     This class can be used to initialize a sequence-to-sequence model with any pretrained autoencoding model as the
     encoder and any pretrained autoregressive model as the decoder. The encoder is loaded via
     :meth:`~transformers.AutoModel.from_pretrained` function and the decoder is loaded via
@@ -62,6 +65,8 @@ CBERT_START_DOCSTRING = r"""
 """
 
 CBERT_INPUTS_DOCSTRING = r"""
+    THIS IS OUTDATED!!!
+
     Args:
         input_ids (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`):
             Indices of input sequence tokens in the vocabulary.
@@ -138,6 +143,43 @@ CBERT_INPUTS_DOCSTRING = r"""
 """
 
 
+class PredictionHeadTransform(torch.nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dense = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        if isinstance(config.hidden_act, str):
+            self.transform_act_fn = ACT2FN[config.hidden_act]
+        else:
+            self.transform_act_fn = config.hidden_act
+        self.LayerNorm = torch.nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+    def forward(self, hidden_states):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.transform_act_fn(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states)
+        return hidden_states
+
+
+class LMPredictionHead(torch.nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.transform = PredictionHeadTransform(config)
+
+        # The output weights are the same as the input embeddings, but there is
+        # an output-only bias for each token.
+        self.decoder = torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        self.bias = torch.nn.Parameter(torch.zeros(config.vocab_size))
+
+        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
+        self.decoder.bias = self.bias
+
+    def forward(self, hidden_states):
+        hidden_states = self.transform(hidden_states)
+        hidden_states = self.decoder(hidden_states)
+        return hidden_states
+
+
 @add_start_docstrings(CBERT_START_DOCSTRING)
 class CBertModel(PreTrainedModel):
     r"""
@@ -186,8 +228,10 @@ class CBertModel(PreTrainedModel):
         #    self.encoder.get_output_embeddings() is None
         #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
 
-        # TODO: parametrize number of slots (or/and make depndent on sequence length)
+        # TODO: parametrize number of slots (or/and make dependent on sequence length)
         self.decoder.resize_token_embeddings(100)
+
+        self.slot_lm_head = LMPredictionHead(self.encoder.config)
 
         # TODO: is this enabled by default?
         # tie encoder, decoder weights if config set accordingly
@@ -226,6 +270,8 @@ class CBertModel(PreTrainedModel):
         **kwargs
     ) -> PreTrainedModel:
         r"""
+        THIS IS OUTDATED!!!
+
         Instantiate an encoder and a decoder from one or two base classes of the library from pretrained model
         checkpoints.
 
@@ -378,6 +424,8 @@ class CBertModel(PreTrainedModel):
         **kwargs,
     ):
         r"""
+        THIS IS OUTDATED!!!
+
         Returns:
 
         Examples::
@@ -412,6 +460,11 @@ class CBertModel(PreTrainedModel):
             argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
         }
 
+        generate_masking = self.training
+
+        if generate_masking:
+            labels = input_ids
+
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
@@ -419,53 +472,94 @@ class CBertModel(PreTrainedModel):
                 inputs_embeds=inputs_embeds,
                 labels=labels,
                 output_attentions=output_attentions,
-                output_hidden_states=(labels is not None) or output_hidden_states,
+                output_hidden_states=generate_masking or output_hidden_states,
                 return_dict=return_dict,
                 **kwargs_encoder,
             )
 
-        if labels is not None:
-            #encoder_hidden_states = encoder_outputs.hidden_states
-            #encoder_hidden_states = encoder_outputs[0]
-            encoder_hidden_states = encoder_outputs.hidden_states[-1]
-            bs = labels.size(0)
-            num_slots = self.decoder.get_input_embeddings().num_embeddings
-            decoder_input_ids = torch.stack(bs * [torch.arange(num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
-            
-            # Decode
-            decoder_outputs = self.decoder(
-                input_ids=decoder_input_ids,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=attention_mask,
-                inputs_embeds=decoder_inputs_embeds,
-                #labels=labels,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                use_cache=use_cache,
-                past_key_values=past_key_values,
-                return_dict=return_dict,
-                **kwargs_decoder,
-            )       
-            decoder_hidden_states =  decoder_outputs.last_hidden_state
-            # TODO: construct masking
+        if not generate_masking:
+            return encoder_outputs
+        
+        encoder_hidden_states = encoder_outputs.hidden_states[-1]
+        bs = labels.size(0)
+        num_slots = self.decoder.get_input_embeddings().num_embeddings
+        decoder_input_ids = torch.stack(bs * [torch.arange(num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
+        
+        # TODO: stop gradient flow here
+        encoder_hidden_states = encoder_hidden_states.detach()
+        
+        # Decode
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=attention_mask,
+            inputs_embeds=decoder_inputs_embeds,
+            #labels=labels,
+            #output_attentions=output_attentions,
+            output_attentions=False,
+            #output_hidden_states=output_hidden_states,
+            output_hidden_states=False,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
+            return_dict=return_dict,
+            **kwargs_decoder,
+        )       
+        decoder_hidden_states =  decoder_outputs.last_hidden_state
+        
+        # Here, we calculate the masked input (TODO: use gumble softmax!)
+        
+        # project token encodings (encoder_hidden_states) 
+        # TODO
+        # project slot encodings (decoder_hidden_states)
+        # TODO
+        # create matrix: token positions x number of slots
+        m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
+        # "mask" special tokens (set to very negative value)
+        # TODO
+        # softmax over token positions (TODO: use gumble!)
+        m = torch.softmax(m, dim=1)
+        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
+        c = torch.ones_like(m[:,:,0]) * 1 / num_slots
+        m = torch.cat([c.unsqueeze(-1), m], dim=-1)
+        # softmax over slots (TODO: use gumble!)
+        m = torch.softmax(m, dim=-1)
+        # calc kept input
+        keep_prob = m[:,:,0]
+        if inputs_embeds is None:
+            inputs_embeds = self.encoder.get_input_embeddings()(input_ids)
+        keep_embeds = inputs_embeds * keep_prob.unsqueeze(-1)
+        # calc replaced input
+        token_slot_probs = m[:,:,1:]
+        slot_prediction_scores = self.slot_lm_head(decoder_hidden_states)
+        # TODO: is this softmax required?
+        slot_probs = torch.softmax(slot_prediction_scores, dim=-1)
+        token_swap_probs = torch.matmul(token_slot_probs, slot_probs)
+        embedding_weights = self.encoder.get_input_embeddings().weight
+        replace_embeds = torch.matmul(token_swap_probs, embedding_weights)
 
-        """
-        if not return_dict:
-            return decoder_outputs + encoder_outputs
+        new_input_embeds = keep_embeds + replace_embeds
 
-        return Seq2SeqLMOutput(
-            loss=decoder_outputs.loss,
-            logits=decoder_outputs.logits,
-            past_key_values=decoder_outputs.past_key_values,
-            decoder_hidden_states=decoder_outputs.hidden_states,
-            decoder_attentions=decoder_outputs.attentions,
-            cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+        # create "label mask" from m: only replaced tokens should be considered for loss prediction
+        m_argmax = m.max(dim=-1)[1]
+        new_labels = labels.clone()
+        new_labels[m_argmax==0] = -100
+        
+        # TODO: stop gradient flow here for student training (or use dedicated optimizer for the trainer and student)
+
+        # calc loss with new input
+        decoder_outputs = self.encoder(
+            input_ids=None,
+            attention_mask=attention_mask,
+            inputs_embeds=new_input_embeds,
+            labels=new_labels,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            **kwargs_encoder,
         )
-        """
+
+        # TODO: calculate trainer loss
 
         return encoder_outputs
         
@@ -489,10 +583,3 @@ class CBertModel(PreTrainedModel):
     def _reorder_cache(self, past, beam_idx):
         # apply decoder cache reordering here
         return self.decoder._reorder_cache(past, beam_idx)
-
-"""
-TODO:
-* use default collator to have all labels in CBert.forward()
-* ... do magic
-
-"""
