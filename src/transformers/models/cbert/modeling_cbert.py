@@ -463,6 +463,7 @@ class CBertModel(PreTrainedModel):
         generate_masking = self.training
 
         if generate_masking:
+            # TODO: consider special tokens (label should be set to -100 for these positions)
             labels = input_ids
 
         if encoder_outputs is None:
