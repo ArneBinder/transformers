@@ -19,7 +19,6 @@ from collections import OrderedDict
 
 from ...configuration_utils import PretrainedConfig
 from ..albert.configuration_albert import ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, AlbertConfig
-from ..cbert.configuration_cbert import CBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, CBertConfig
 from ..bart.configuration_bart import BART_PRETRAINED_CONFIG_ARCHIVE_MAP, BartConfig
 from ..bert.configuration_bert import BERT_PRETRAINED_CONFIG_ARCHIVE_MAP, BertConfig
 from ..bert_generation.configuration_bert_generation import BertGenerationConfig
@@ -35,6 +34,7 @@ from ..distilbert.configuration_distilbert import DISTILBERT_PRETRAINED_CONFIG_A
 from ..dpr.configuration_dpr import DPR_PRETRAINED_CONFIG_ARCHIVE_MAP, DPRConfig
 from ..electra.configuration_electra import ELECTRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ElectraConfig
 from ..encoder_decoder.configuration_encoder_decoder import EncoderDecoderConfig
+from ..cbert.configuration_cbert import CBertConfig
 from ..flaubert.configuration_flaubert import FLAUBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, FlaubertConfig
 from ..fsmt.configuration_fsmt import FSMT_PRETRAINED_CONFIG_ARCHIVE_MAP, FSMTConfig
 from ..funnel.configuration_funnel import FUNNEL_PRETRAINED_CONFIG_ARCHIVE_MAP, FunnelConfig
@@ -121,7 +121,6 @@ CONFIG_MAPPING = OrderedDict(
         ("mobilebert", MobileBertConfig),
         ("distilbert", DistilBertConfig),
         ("albert", AlbertConfig),
-        ("cbert", CBertConfig),
         ("bert-generation", BertGenerationConfig),
         ("camembert", CamembertConfig),
         ("xlm-roberta", XLMRobertaConfig),
@@ -149,6 +148,7 @@ CONFIG_MAPPING = OrderedDict(
         ("ctrl", CTRLConfig),
         ("electra", ElectraConfig),
         ("encoder-decoder", EncoderDecoderConfig),
+        ("cbert", CBertConfig),
         ("funnel", FunnelConfig),
         ("lxmert", LxmertConfig),
         ("dpr", DPRConfig),

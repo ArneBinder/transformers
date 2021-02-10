@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 Google AI, Google Brain and the HuggingFace Inc. team.
+# Copyright 2018 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,123 +12,39 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch CBERT model. """
+""" Classes to support Encoder-Decoder architectures """
 
-import math
-import os
-from dataclasses import dataclass
-from typing import Optional, Tuple
+
+from typing import Optional
 
 import torch
-import torch.nn as nn
-from torch.nn import CrossEntropyLoss, MSELoss
 
-from ...activations import ACT2FN
-from ...file_utils import (
-    ModelOutput,
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
-from ...modeling_outputs import (
-    BaseModelOutput,
-    BaseModelOutputWithPooling,
-    MaskedLMOutput,
-    MultipleChoiceModelOutput,
-    QuestionAnsweringModelOutput,
-    SequenceClassifierOutput,
-    TokenClassifierOutput,
-)
-from ...modeling_utils import (
-    PreTrainedModel,
-    apply_chunking_to_forward,
-    find_pruneable_heads_and_indices,
-    prune_linear_layer,
-)
+from ...configuration_utils import PretrainedConfig
+from ...file_utils import add_start_docstrings, add_start_docstrings_to_model_forward, replace_return_docstrings
+from ...modeling_outputs import Seq2SeqLMOutput
+from ...modeling_utils import PreTrainedModel
 from ...utils import logging
 from .configuration_cbert import CBertConfig
-
-from ...models.albert.modeling_albert import AlbertEmbeddings, AlbertTransformer
 
 
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "CBertConfig"
-_TOKENIZER_FOR_DOC = "AlbertTokenizer"
-
-
-CBERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "cbert-base-v1",
-    "cbert-large-v1",
-    "cbert-xlarge-v1",
-    "cbert-xxlarge-v1",
-    "cbert-base-v2",
-    "cbert-large-v2",
-    "cbert-xlarge-v2",
-    "cbert-xxlarge-v2",
-    # See all CBERT models at https://huggingface.co/models?filter=cbert
-]
-
-
-class CBertPreTrainedModel(PreTrainedModel):
-    """
-    An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
-    models.
-    """
-
-    config_class = CBertConfig
-    base_model_prefix = "cbert"
-    _keys_to_ignore_on_load_missing = [r"position_ids"]
-
-    def _init_weights(self, module):
-        """Initialize the weights."""
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if isinstance(module, (nn.Linear)) and module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-
-
-@dataclass
-class CBertForPreTrainingOutput(ModelOutput):
-    """
-    Output type of :class:`~transformers.CBertForPreTraining`.
-
-    Args:
-        loss (`optional`, returned when ``labels`` is provided, ``torch.FloatTensor`` of shape :obj:`(1,)`):
-            Total loss as the sum of the masked language modeling loss and the next sequence prediction
-            (classification) loss.
-        prediction_logits (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, config.vocab_size)`):
-            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        sop_logits (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, 2)`):
-            Prediction scores of the next sequence prediction (classification) head (scores of True/False continuation
-            before SoftMax).
-        hidden_states (:obj:`tuple(torch.FloatTensor)`, `optional`, returned when ``output_hidden_states=True`` is passed or when ``config.output_hidden_states=True``):
-            Tuple of :obj:`torch.FloatTensor` (one for the output of the embeddings + one for the output of each layer)
-            of shape :obj:`(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
-        attentions (:obj:`tuple(torch.FloatTensor)`, `optional`, returned when ``output_attentions=True`` is passed or when ``config.output_attentions=True``):
-            Tuple of :obj:`torch.FloatTensor` (one for each layer) of shape :obj:`(batch_size, num_heads,
-            sequence_length, sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-    """
-
-    loss: Optional[torch.FloatTensor] = None
-    prediction_logits: torch.FloatTensor = None
-    sop_logits: torch.FloatTensor = None
-    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-    attentions: Optional[Tuple[torch.FloatTensor]] = None
-
 
 CBERT_START_DOCSTRING = r"""
+    This class can be used to initialize a sequence-to-sequence model with any pretrained autoencoding model as the
+    encoder and any pretrained autoregressive model as the decoder. The encoder is loaded via
+    :meth:`~transformers.AutoModel.from_pretrained` function and the decoder is loaded via
+    :meth:`~transformers.AutoModelForCausalLM.from_pretrained` function. Cross-attention layers are automatically added
+    to the decoder and should be fine-tuned on a downstream generative task, like summarization.
+
+    The effectiveness of initializing sequence-to-sequence models with pretrained checkpoints for sequence generation
+    tasks was shown in `Leveraging Pre-trained Checkpoints for Sequence Generation Tasks
+    <https://arxiv.org/abs/1907.12461>`__ by Sascha Rothe, Shashi Narayan, Aliaksei Severyn. Michael Matena, Yanqi
+    Zhou, Wei Li, Peter J. Liu.
+
+    After such an Encoder Decoder model has been trained/fine-tuned, it can be saved/loaded just like any other models
+    (see the examples for more information).
 
     This model inherits from :class:`~transformers.PreTrainedModel`. Check the superclass documentation for the generic
     methods the library implements for all its model (such as downloading or saving, resizing the input embeddings,
@@ -138,8 +54,8 @@ CBERT_START_DOCSTRING = r"""
     subclass. Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to
     general usage and behavior.
 
-    Args:
-        config (:class:`~transformers.CBertConfig`): Model configuration class with all the parameters of the model.
+    Parameters:
+        config (:class:`~transformers.T5Config`): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
             configuration. Check out the :meth:`~transformers.PreTrainedModel.from_pretrained` method to load the model
             weights.
@@ -147,44 +63,65 @@ CBERT_START_DOCSTRING = r"""
 
 CBERT_INPUTS_DOCSTRING = r"""
     Args:
-        input_ids (:obj:`torch.LongTensor` of shape :obj:`({0})`):
+        input_ids (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`):
             Indices of input sequence tokens in the vocabulary.
 
-            Indices can be obtained using :class:`~transformers.CBertTokenizer`. See
-            :meth:`transformers.PreTrainedTokenizer.__call__` and :meth:`transformers.PreTrainedTokenizer.encode` for
+            Indices can be obtained using :class:`~transformers.PreTrainedTokenizer`. See
+            :meth:`transformers.PreTrainedTokenizer.encode` and :meth:`transformers.PreTrainedTokenizer.__call__` for
             details.
 
             `What are input IDs? <../glossary.html#input-ids>`__
-        attention_mask (:obj:`torch.FloatTensor` of shape :obj:`({0})`, `optional`):
+        attention_mask (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
             Mask to avoid performing attention on padding token indices. Mask values selected in ``[0, 1]``:
 
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
 
             `What are attention masks? <../glossary.html#attention-mask>`__
-        token_type_ids (:obj:`torch.LongTensor` of shape :obj:`({0})`, `optional`):
-            Segment token indices to indicate first and second portions of the inputs. Indices are selected in ``[0,
-            1]``:
+        decoder_input_ids (:obj:`torch.LongTensor` of shape :obj:`(batch_size, target_sequence_length)`, `optional`):
+            Indices of decoder input sequence tokens in the vocabulary.
 
-            - 0 corresponds to a `sentence A` token,
-            - 1 corresponds to a `sentence B` token.
+            Indices can be obtained using :class:`~transformers.PreTrainedTokenizer`. See
+            :meth:`transformers.PreTrainedTokenizer.encode` and :meth:`transformers.PreTrainedTokenizer.__call__` for
+            details.
 
-            `What are token type IDs? <../glossary.html#token-type-ids>`_
-        position_ids (:obj:`torch.LongTensor` of shape :obj:`({0})`, `optional`):
-            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range ``[0,
-            config.max_position_embeddings - 1]``.
+            `What are input IDs? <../glossary.html#input-ids>`__
 
-            `What are position IDs? <../glossary.html#position-ids>`_
-        head_mask (:obj:`torch.FloatTensor` of shape :obj:`(num_heads,)` or :obj:`(num_layers, num_heads)`, `optional`):
-            Mask to nullify selected heads of the self-attention modules. Mask values selected in ``[0, 1]``:
+            If :obj:`past_key_values` is used, optionally only the last :obj:`decoder_input_ids` have to be input (see
+            :obj:`past_key_values`).
 
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
+            Provide for sequence to sequence training to the decoder. Indices can be obtained using
+            :class:`~transformers.PretrainedTokenizer`. See :meth:`transformers.PreTrainedTokenizer.encode` and
+            :meth:`transformers.PreTrainedTokenizer.__call__` for details.
+        decoder_attention_mask (:obj:`torch.BoolTensor` of shape :obj:`(batch_size, target_sequence_length)`, `optional`):
+            Default behavior: generate a tensor that ignores pad tokens in :obj:`decoder_input_ids`. Causal mask will
+            also be used by default.
+        encoder_outputs (:obj:`tuple(torch.FloatTensor)`, `optional`):
+            This tuple must consist of (:obj:`last_hidden_state`, `optional`: :obj:`hidden_states`, `optional`:
+            :obj:`attentions`) :obj:`last_hidden_state` (:obj:`torch.FloatTensor` of shape :obj:`(batch_size,
+            sequence_length, hidden_size)`) is a tensor of hidden-states at the output of the last layer of the
+            encoder. Used in the cross-attention of the decoder.
+        past_key_values (:obj:`tuple(tuple(torch.FloatTensor))` of length :obj:`config.n_layers` with each tuple having 4 tensors of shape :obj:`(batch_size, num_heads, sequence_length - 1, embed_size_per_head)`):
+            Contains precomputed key and value hidden states of the attention blocks. Can be used to speed up decoding.
 
-        inputs_embeds (:obj:`torch.FloatTensor` of shape :obj:`({0}, hidden_size)`, `optional`):
+            If :obj:`past_key_values` are used, the user can optionally input only the last :obj:`decoder_input_ids`
+            (those that don't have their past key value states given to this model) of shape :obj:`(batch_size, 1)`
+            instead of all :obj:`decoder_input_ids` of shape :obj:`(batch_size, sequence_length)`.
+        inputs_embeds (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
             Optionally, instead of passing :obj:`input_ids` you can choose to directly pass an embedded representation.
             This is useful if you want more control over how to convert :obj:`input_ids` indices into associated
             vectors than the model's internal embedding lookup matrix.
+        decoder_inputs_embeds (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, target_sequence_length, hidden_size)`, `optional`):
+            Optionally, instead of passing :obj:`decoder_input_ids` you can choose to directly pass an embedded
+            representation. This is useful if you want more control over how to convert :obj:`decoder_input_ids`
+            indices into associated vectors than the model's internal embedding lookup matrix.
+        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
+            Labels for computing the masked language modeling loss for the decoder. Indices should be in ``[-100, 0,
+            ..., config.vocab_size]`` (see ``input_ids`` docstring) Tokens with indices set to ``-100`` are ignored
+            (masked), the loss is only computed for the tokens with labels in ``[0, ..., config.vocab_size]``
+        use_cache (:obj:`bool`, `optional`):
+            If set to :obj:`True`, :obj:`past_key_values` key value states are returned and can be used to speed up
+            decoding (see :obj:`past_key_values`).
         output_attentions (:obj:`bool`, `optional`):
             Whether or not to return the attentions tensors of all attention layers. See ``attentions`` under returned
             tensors for more detail.
@@ -192,722 +129,370 @@ CBERT_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See ``hidden_states`` under returned tensors for
             more detail.
         return_dict (:obj:`bool`, `optional`):
-            Whether or not to return a :class:`~transformers.file_utils.ModelOutput` instead of a plain tuple.
+            If set to ``True``, the model will return a :class:`~transformers.file_utils.Seq2SeqLMOutput` instead of a
+            plain tuple.
+        kwargs: (`optional`) Remaining dictionary of keyword arguments. Keyword arguments come in two flavors:
+
+            - Without a prefix which will be input as ``**encoder_kwargs`` for the encoder forward function.
+            - With a `decoder_` prefix which will be input as ``**decoder_kwargs`` for the decoder forward function.
 """
 
 
-@add_start_docstrings(
-    "The bare CBERT Model transformer outputting raw hidden-states without any specific head on top.",
-    CBERT_START_DOCSTRING,
-)
-class CBertModel(CBertPreTrainedModel):
-
+@add_start_docstrings(CBERT_START_DOCSTRING)
+class CBertModel(PreTrainedModel):
+    r"""
+    :class:`~transformers.CBert` is a generic model class that will be instantiated as a transformer
+    architecture with one of the base model classes of the library as encoder and another one as decoder when created
+    with the :meth`~transformers.AutoModel.from_pretrained` class method for the encoder and
+    :meth`~transformers.AutoModelForCausalLM.from_pretrained` class method for the decoder.
+    """
     config_class = CBertConfig
-    #load_tf_weights = load_tf_weights_in_cbert
     base_model_prefix = "cbert"
 
-    def __init__(self, config, add_pooling_layer=True):
+    def __init__(
+        self,
+        config: Optional[PretrainedConfig] = None,
+        encoder: Optional[PreTrainedModel] = None,
+        decoder: Optional[PreTrainedModel] = None,
+    ):
+        assert config is not None or (
+            encoder is not None and decoder is not None
+        ), "Either a configuration or an Encoder and a decoder has to be provided"
+        if config is None:
+            config = CBertConfig.from_encode_decoder_configs(encoder.config, decoder.config)
+        else:
+            assert isinstance(config, self.config_class), "config: {} has to be of type {}".format(
+                config, self.config_class
+            )
+        # initialize with config
         super().__init__(config)
 
-        self.config = config
-        self.embeddings = AlbertEmbeddings(config)
-        self.encoder = AlbertTransformer(config)
-        if add_pooling_layer:
-            self.pooler = nn.Linear(config.hidden_size, config.hidden_size)
-            self.pooler_activation = nn.Tanh()
-        else:
-            self.pooler = None
-            self.pooler_activation = None
+        if encoder is None:
+            #from ..auto.modeling_auto import AutoModel
+            from ..auto.modeling_auto import AutoModelForMaskedLM
 
-        self.init_weights()
+            encoder = AutoModelForMaskedLM.from_config(config.encoder)
+
+        if decoder is None:
+            #from ..auto.modeling_auto import AutoModelForCausalLM
+            from ..auto.modeling_auto import AutoModel
+
+            decoder = AutoModel.from_config(config.decoder)
+
+        self.encoder = encoder
+        self.decoder = decoder
+        # TODO: add similar assertion for decoder
+        #assert (
+        #    self.encoder.get_output_embeddings() is None
+        #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
+
+        # TODO: parametrize number of slots (or/and make depndent on sequence length)
+        self.decoder.resize_token_embeddings(100)
+
+        # TODO: is this enabled by default?
+        # tie encoder, decoder weights if config set accordingly
+        self.tie_weights()
+
+    def tie_weights(self):
+        # tie encoder & decoder if needed
+        if self.config.tie_encoder_decoder:
+            # tie encoder and decoder base model
+            decoder_base_model_prefix = self.decoder.base_model_prefix
+            self._tie_encoder_decoder_weights(
+                self.encoder, self.decoder._modules[decoder_base_model_prefix], self.decoder.base_model_prefix
+            )
+
+    def get_encoder(self):
+        return self.encoder
+
+    def get_decoder(self):
+        return self.decoder
 
     def get_input_embeddings(self):
-        return self.embeddings.word_embeddings
-
-    def set_input_embeddings(self, value):
-        self.embeddings.word_embeddings = value
-
-    def _prune_heads(self, heads_to_prune):
-        """
-        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} CBERT has
-        a different architecture in that its layers are shared across groups, which then has inner groups. If an CBERT
-        model has 12 hidden layers and 2 hidden groups, with two inner groups, there is a total of 4 different layers.
-
-        These layers are flattened: the indices [0,1] correspond to the two inner groups of the first hidden layer,
-        while [2,3] correspond to the two inner groups of the second hidden layer.
-
-        Any layer with in index other than [0,1,2,3] will result in an error. See base class PreTrainedModel for more
-        information about head pruning
-        """
-        for layer, heads in heads_to_prune.items():
-            group_idx = int(layer / self.config.inner_group_num)
-            inner_group_idx = int(layer - group_idx * self.config.inner_group_num)
-            self.encoder.cbert_layer_groups[group_idx].cbert_layers[inner_group_idx].attention.prune_heads(heads)
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=BaseModelOutputWithPooling,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif input_ids is not None:
-            input_shape = input_ids.size()
-        elif inputs_embeds is not None:
-            input_shape = inputs_embeds.size()[:-1]
-        else:
-            raise ValueError("You have to specify either input_ids or inputs_embeds")
-
-        device = input_ids.device if input_ids is not None else inputs_embeds.device
-
-        if attention_mask is None:
-            attention_mask = torch.ones(input_shape, device=device)
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
-
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-        extended_attention_mask = extended_attention_mask.to(dtype=self.dtype)  # fp16 compatibility
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-        head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
-
-        embedding_output = self.embeddings(
-            input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
-        )
-        encoder_outputs = self.encoder(
-            embedding_output,
-            extended_attention_mask,
-            head_mask=head_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        sequence_output = encoder_outputs[0]
-
-        pooled_output = self.pooler_activation(self.pooler(sequence_output[:, 0])) if self.pooler is not None else None
-
-        if not return_dict:
-            return (sequence_output, pooled_output) + encoder_outputs[1:]
-
-        return BaseModelOutputWithPooling(
-            last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-        )
-
-
-@add_start_docstrings(
-    """
-    CBert Model with two heads on top as done during the pretraining: a `masked language modeling` head and a
-    `sentence order prediction (classification)` head.
-    """,
-    CBERT_START_DOCSTRING,
-)
-class CBertForPreTraining(CBertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-
-        self.cbert = CBertModel(config)
-        self.predictions = CBertMLMHead(config)
-        self.sop_classifier = CBertSOPHead(config)
-
-        self.init_weights()
+        return self.encoder.get_input_embeddings()
 
     def get_output_embeddings(self):
-        return self.predictions.decoder
+        return self.decoder.get_output_embeddings()
 
     def set_output_embeddings(self, new_embeddings):
-        self.predictions.decoder = new_embeddings
+        return self.decoder.set_output_embeddings(new_embeddings)
 
-    def get_input_embeddings(self):
-        return self.cbert.embeddings.word_embeddings
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=CBertForPreTrainingOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        sentence_order_label=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+    @classmethod
+    def from_cbert_pretrained(
+        cls,
+        encoder_pretrained_model_name_or_path: str = None,
+        decoder_pretrained_model_name_or_path: str = None,
+        *model_args,
+        **kwargs
+    ) -> PreTrainedModel:
         r"""
-        labels (``torch.LongTensor`` of shape ``(batch_size, sequence_length)``, `optional`):
-            Labels for computing the masked language modeling loss. Indices should be in ``[-100, 0, ...,
-            config.vocab_size]`` (see ``input_ids`` docstring) Tokens with indices set to ``-100`` are ignored
-            (masked), the loss is only computed for the tokens with labels in ``[0, ..., config.vocab_size]``
-        sentence_order_label (``torch.LongTensor`` of shape ``(batch_size,)``, `optional`):
-            Labels for computing the next sequence prediction (classification) loss. Input should be a sequence pair
-            (see :obj:`input_ids` docstring) Indices should be in ``[0, 1]``. ``0`` indicates original order (sequence
-            A, then sequence B), ``1`` indicates switched order (sequence B, then sequence A).
+        Instantiate an encoder and a decoder from one or two base classes of the library from pretrained model
+        checkpoints.
 
-        Returns:
+
+        The model is set in evaluation mode by default using :obj:`model.eval()` (Dropout modules are deactivated). To
+        train the model, you need to first set it back in training mode with :obj:`model.train()`.
+
+        Params:
+            encoder_pretrained_model_name_or_path (:obj: `str`, `optional`):
+                Information necessary to initiate the encoder. Can be either:
+
+                    - A string, the `model id` of a pretrained model hosted inside a model repo on huggingface.co.
+                      Valid model ids can be located at the root-level, like ``bert-base-uncased``, or namespaced under
+                      a user or organization name, like ``dbmdz/bert-base-german-cased``.
+                    - A path to a `directory` containing model weights saved using
+                      :func:`~transformers.PreTrainedModel.save_pretrained`, e.g., ``./my_model_directory/``.
+                    - A path or url to a `tensorflow index checkpoint file` (e.g, ``./tf_model/model.ckpt.index``). In
+                      this case, ``from_tf`` should be set to :obj:`True` and a configuration object should be provided
+                      as ``config`` argument. This loading path is slower than converting the TensorFlow checkpoint in
+                      a PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
+
+            decoder_pretrained_model_name_or_path (:obj: `str`, `optional`, defaults to `None`):
+                Information necessary to initiate the decoder. Can be either:
+
+                    - A string, the `model id` of a pretrained model hosted inside a model repo on huggingface.co.
+                      Valid model ids can be located at the root-level, like ``bert-base-uncased``, or namespaced under
+                      a user or organization name, like ``dbmdz/bert-base-german-cased``.
+                    - A path to a `directory` containing model weights saved using
+                      :func:`~transformers.PreTrainedModel.save_pretrained`, e.g., ``./my_model_directory/``.
+                    - A path or url to a `tensorflow index checkpoint file` (e.g, ``./tf_model/model.ckpt.index``). In
+                      this case, ``from_tf`` should be set to :obj:`True` and a configuration object should be provided
+                      as ``config`` argument. This loading path is slower than converting the TensorFlow checkpoint in
+                      a PyTorch model using the provided conversion scripts and loading the PyTorch model afterwards.
+
+            model_args (remaining positional arguments, `optional`):
+                All remaning positional arguments will be passed to the underlying model's ``__init__`` method.
+
+            kwargs (remaining dictionary of keyword arguments, `optional`):
+                Can be used to update the configuration object (after it being loaded) and initiate the model (e.g.,
+                :obj:`output_attentions=True`).
+
+                - To update the encoder configuration, use the prefix `encoder_` for each configuration parameter.
+                - To update the decoder configuration, use the prefix `decoder_` for each configuration parameter.
+                - To update the parent model configuration, do not use a prefix for each configuration parameter.
+
+                Behaves differently depending on whether a :obj:`config` is provided or automatically loaded.
 
         Example::
 
-            >>> from transformers import CBertTokenizer, CBertForPreTraining
+            >>> from transformers import CBertModel
+            >>> # initialize a bert2bert from two pretrained BERT models. Note that the cross-attention layers will be randomly initialized
+            >>> model = CBertModel.from_cbert_pretrained('bert-base-uncased', 'bert-base-uncased')
+            >>> # saving model after fine-tuning
+            >>> model.save_pretrained("./bert2bert")
+            >>> # load fine-tuned model
+            >>> model = CBertModel.from_pretrained("./bert2bert")
+
+        """
+
+        kwargs_encoder = {
+            argument[len("encoder_") :]: value for argument, value in kwargs.items() if argument.startswith("encoder_")
+        }
+
+        kwargs_decoder = {
+            argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
+        }
+
+        # remove encoder, decoder kwargs from kwargs
+        for key in kwargs_encoder.keys():
+            del kwargs["encoder_" + key]
+        for key in kwargs_decoder.keys():
+            del kwargs["decoder_" + key]
+
+        # Load and initialize the encoder and decoder
+        # The distinction between encoder and decoder at the model level is made
+        # by the value of the flag `is_decoder` that we need to set correctly.
+        encoder = kwargs_encoder.pop("model", None)
+        if encoder is None:
+            assert (
+                encoder_pretrained_model_name_or_path is not None
+            ), "If `model` is not defined as an argument, a `encoder_pretrained_model_name_or_path` has to be defined"
+            #from ..auto.modeling_auto import AutoModel
+            from ..auto.modeling_auto import AutoModelForMaskedLM
+
+            if "config" not in kwargs_encoder:
+                from ..auto.configuration_auto import AutoConfig
+
+                encoder_config = AutoConfig.from_pretrained(encoder_pretrained_model_name_or_path)
+                if encoder_config.is_decoder is True or encoder_config.add_cross_attention is True:
+
+                    logger.info(
+                        f"Initializing {encoder_pretrained_model_name_or_path} as a encoder model from a decoder model. Cross-attention and casual mask are disabled."
+                    )
+                    encoder_config.is_decoder = False
+                    encoder_config.add_cross_attention = False
+
+                kwargs_encoder["config"] = encoder_config
+
+            encoder = AutoModelForMaskedLM.from_pretrained(encoder_pretrained_model_name_or_path, *model_args, **kwargs_encoder)
+
+        decoder = kwargs_decoder.pop("model", None)
+        if decoder is None:
+            assert (
+                decoder_pretrained_model_name_or_path is not None
+            ), "If `decoder_model` is not defined as an argument, a `decoder_pretrained_model_name_or_path` has to be defined"
+            #from ..auto.modeling_auto import AutoModelForCausalLM
+            from ..auto.modeling_auto import AutoModel
+
+            if "config" not in kwargs_decoder:
+                from ..auto.configuration_auto import AutoConfig
+
+                decoder_config = AutoConfig.from_pretrained(decoder_pretrained_model_name_or_path)
+                if decoder_config.is_decoder is False or decoder_config.add_cross_attention is False:
+                    logger.info(
+                        f"Initializing {decoder_pretrained_model_name_or_path} as a decoder model. Cross attention layers are added to {decoder_pretrained_model_name_or_path} and randomly initialized if {decoder_pretrained_model_name_or_path}'s architecture allows for cross attention layers."
+                    )
+                    decoder_config.is_decoder = True
+                    decoder_config.add_cross_attention = True
+
+                kwargs_decoder["config"] = decoder_config
+
+            if kwargs_decoder["config"].is_decoder is False or kwargs_decoder["config"].add_cross_attention is False:
+                logger.warning(
+                    f"Decoder model {decoder_pretrained_model_name_or_path} is not initialized as a decoder. In order to initialize {decoder_pretrained_model_name_or_path} as a decoder, make sure that the attributes `is_decoder` and `add_cross_attention` of `decoder_config` passed to `.from_cbert_pretrained(...)` are set to `True` or do not pass a `decoder_config` to `.from_cbert_pretrained(...)`"
+                )
+
+            decoder = AutoModel.from_pretrained(decoder_pretrained_model_name_or_path, **kwargs_decoder)
+
+        # instantiate config with corresponding kwargs
+        config = CBertConfig.from_encode_decoder_configs(encoder.config, decoder.config, **kwargs)
+        return cls(encoder=encoder, decoder=decoder, config=config)
+
+    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        decoder_input_ids=None,
+        decoder_attention_mask=None,
+        encoder_outputs=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        decoder_inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        **kwargs,
+    ):
+        r"""
+        Returns:
+
+        Examples::
+
+            >>> from transformers import CBertModel, BertTokenizer
             >>> import torch
 
-            >>> tokenizer = CBertTokenizer.from_pretrained('cbert-base-v2')
-            >>> model = CBertForPreTraining.from_pretrained('cbert-base-v2')
+            >>> tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+            >>> model = CBertModel.from_cbert_pretrained('bert-base-uncased', 'bert-base-uncased') # initialize Bert2Bert from pre-trained checkpoints
 
+            >>> # forward
             >>> input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(0)  # Batch size 1
-            >>> outputs = model(input_ids)
+            >>> outputs = model(input_ids=input_ids, decoder_input_ids=input_ids)
 
-            >>> prediction_logits = outputs.prediction_logits
-            >>> sop_logits = outputs.sop_logits
+            >>> # training
+            >>> outputs = model(input_ids=input_ids, decoder_input_ids=input_ids, labels=input_ids)
+            >>> loss, logits = outputs.loss, outputs.logits
+
+            >>> # save and load from pretrained
+            >>> model.save_pretrained("bert2bert")
+            >>> model = CBertModel.from_pretrained("bert2bert")
+
+            >>> # generation
+            >>> generated = model.generate(input_ids, decoder_start_token_id=model.config.decoder.pad_token_id)
 
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.cbert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        kwargs_encoder = {argument: value for argument, value in kwargs.items() if not argument.startswith("decoder_")}
 
-        sequence_output, pooled_output = outputs[:2]
+        kwargs_decoder = {
+            argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
+        }
 
-        prediction_scores = self.predictions(sequence_output)
-        sop_scores = self.sop_classifier(pooled_output)
+        if encoder_outputs is None:
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=(labels is not None) or output_hidden_states,
+                return_dict=return_dict,
+                **kwargs_encoder,
+            )
 
-        total_loss = None
-        if labels is not None and sentence_order_label is not None:
-            loss_fct = CrossEntropyLoss()
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
-            sentence_order_loss = loss_fct(sop_scores.view(-1, 2), sentence_order_label.view(-1))
-            total_loss = masked_lm_loss + sentence_order_loss
-
-        if not return_dict:
-            output = (prediction_scores, sop_scores) + outputs[2:]
-            return ((total_loss,) + output) if total_loss is not None else output
-
-        return CBertForPreTrainingOutput(
-            loss=total_loss,
-            prediction_logits=prediction_scores,
-            sop_logits=sop_scores,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-
-class CBertMLMHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.LayerNorm = nn.LayerNorm(config.embedding_size)
-        self.bias = nn.Parameter(torch.zeros(config.vocab_size))
-        self.dense = nn.Linear(config.hidden_size, config.embedding_size)
-        self.decoder = nn.Linear(config.embedding_size, config.vocab_size)
-        self.activation = ACT2FN[config.hidden_act]
-
-        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
-        self.decoder.bias = self.bias
-
-    def forward(self, hidden_states):
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.activation(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states)
-        hidden_states = self.decoder(hidden_states)
-
-        prediction_scores = hidden_states
-
-        return prediction_scores
-
-
-class CBertSOPHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.dropout = nn.Dropout(config.classifier_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-
-    def forward(self, pooled_output):
-        dropout_pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(dropout_pooled_output)
-        return logits
-
-
-@add_start_docstrings(
-    "CBert Model with a `language modeling` head on top.",
-    CBERT_START_DOCSTRING,
-)
-class CBertForMaskedLM(CBertPreTrainedModel):
-
-    _keys_to_ignore_on_load_unexpected = [r"pooler"]
-
-    def __init__(self, config):
-        super().__init__(config)
-
-        self.cbert = CBertModel(config, add_pooling_layer=False)
-        self.predictions = CBertMLMHead(config)
-
-        self.init_weights()
-
-    def get_output_embeddings(self):
-        return self.predictions.decoder
-
-    def set_output_embeddings(self, new_embeddings):
-        self.predictions.decoder = new_embeddings
-
-    def get_input_embeddings(self):
-        return self.cbert.embeddings.word_embeddings
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=MaskedLMOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for computing the masked language modeling loss. Indices should be in ``[-100, 0, ...,
-            config.vocab_size]`` (see ``input_ids`` docstring) Tokens with indices set to ``-100`` are ignored
-            (masked), the loss is only computed for the tokens with labels in ``[0, ..., config.vocab_size]``
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.cbert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-        sequence_outputs = outputs[0]
-
-        prediction_scores = self.predictions(sequence_outputs)
-
-        masked_lm_loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
+            #encoder_hidden_states = encoder_outputs.hidden_states
+            #encoder_hidden_states = encoder_outputs[0]
+            encoder_hidden_states = encoder_outputs.hidden_states[-1]
+            bs = labels.size(0)
+            num_slots = self.decoder.get_input_embeddings().num_embeddings
+            decoder_input_ids = torch.stack(bs * [torch.arange(num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
+            
+            # Decode
+            decoder_outputs = self.decoder(
+                input_ids=decoder_input_ids,
+                attention_mask=decoder_attention_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=attention_mask,
+                inputs_embeds=decoder_inputs_embeds,
+                #labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                use_cache=use_cache,
+                past_key_values=past_key_values,
+                return_dict=return_dict,
+                **kwargs_decoder,
+            )       
+            decoder_hidden_states =  decoder_outputs.last_hidden_state
+            # TODO: construct masking
 
-        if not return_dict:
-            output = (prediction_scores,) + outputs[2:]
-            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
-
-        return MaskedLMOutput(
-            loss=masked_lm_loss,
-            logits=prediction_scores,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-
-@add_start_docstrings(
-    """
-    CBert Model transformer with a sequence classification/regression head on top (a linear layer on top of the pooled
-    output) e.g. for GLUE tasks.
-    """,
-    CBERT_START_DOCSTRING,
-)
-class CBertForSequenceClassification(CBertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-
-        self.cbert = CBertModel(config)
-        self.dropout = nn.Dropout(config.classifier_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
-
-        self.init_weights()
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=SequenceClassifierOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-            Labels for computing the sequence classification/regression loss. Indices should be in ``[0, ...,
-            config.num_labels - 1]``. If ``config.num_labels == 1`` a regression loss is computed (Mean-Square loss),
-            If ``config.num_labels > 1`` a classification loss is computed (Cross-Entropy).
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.cbert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        pooled_output = outputs[1]
-
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-
-        loss = None
-        if labels is not None:
-            if self.num_labels == 1:
-                #  We are doing regression
-                loss_fct = MSELoss()
-                loss = loss_fct(logits.view(-1), labels.view(-1))
-            else:
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
         if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
+            return decoder_outputs + encoder_outputs
 
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+        return Seq2SeqLMOutput(
+            loss=decoder_outputs.loss,
+            logits=decoder_outputs.logits,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
         )
-
-
-@add_start_docstrings(
-    """
-    CBert Model with a token classification head on top (a linear layer on top of the hidden-states output) e.g. for
-    Named-Entity-Recognition (NER) tasks.
-    """,
-    CBERT_START_DOCSTRING,
-)
-class CBertForTokenClassification(CBertPreTrainedModel):
-
-    _keys_to_ignore_on_load_unexpected = [r"pooler"]
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-
-        self.cbert = CBertModel(config, add_pooling_layer=False)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
-
-        self.init_weights()
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=TokenClassifierOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Labels for computing the token classification loss. Indices should be in ``[0, ..., config.num_labels -
-            1]``.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.cbert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        sequence_output = outputs[0]
-
-        sequence_output = self.dropout(sequence_output)
-        logits = self.classifier(sequence_output)
-
-        loss = None
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            # Only keep active parts of the loss
-            if attention_mask is not None:
-                active_loss = attention_mask.view(-1) == 1
-                active_logits = logits.view(-1, self.num_labels)[active_loss]
-                active_labels = labels.view(-1)[active_loss]
-                loss = loss_fct(active_logits, active_labels)
-            else:
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
-        return TokenClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-
-@add_start_docstrings(
-    """
-    CBert Model with a span classification head on top for extractive question-answering tasks like SQuAD (a linear
-    layers on top of the hidden-states output to compute `span start logits` and `span end logits`).
-    """,
-    CBERT_START_DOCSTRING,
-)
-class CBertForQuestionAnswering(CBertPreTrainedModel):
-
-    _keys_to_ignore_on_load_unexpected = [r"pooler"]
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-
-        self.cbert = CBertModel(config, add_pooling_layer=False)
-        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
-
-        self.init_weights()
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=QuestionAnsweringModelOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        start_positions=None,
-        end_positions=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        return encoder_outputs
+        
+    
+    # TODO: remove(?)
+    def prepare_inputs_for_generation(
+        self, input_ids, past=None, attention_mask=None, use_cache=None, encoder_outputs=None, **kwargs
     ):
-        r"""
-        start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-            Labels for position (index) of the start of the labelled span for computing the token classification loss.
-            Positions are clamped to the length of the sequence (:obj:`sequence_length`). Position outside of the
-            sequence are not taken into account for computing the loss.
-        end_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-            Labels for position (index) of the end of the labelled span for computing the token classification loss.
-            Positions are clamped to the length of the sequence (:obj:`sequence_length`). Position outside of the
-            sequence are not taken into account for computing the loss.
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        decoder_inputs = self.decoder.prepare_inputs_for_generation(input_ids, past=past)
+        decoder_attention_mask = decoder_inputs["attention_mask"] if "attention_mask" in decoder_inputs else None
+        input_dict = {
+            "attention_mask": attention_mask,
+            "decoder_attention_mask": decoder_attention_mask,
+            "decoder_input_ids": decoder_inputs["input_ids"],
+            "encoder_outputs": encoder_outputs,
+            "past_key_values": decoder_inputs["past_key_values"],
+            "use_cache": use_cache,
+        }
+        return input_dict
 
-        outputs = self.cbert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+    def _reorder_cache(self, past, beam_idx):
+        # apply decoder cache reordering here
+        return self.decoder._reorder_cache(past, beam_idx)
 
-        sequence_output = outputs[0]
+"""
+TODO:
+* use default collator to have all labels in CBert.forward()
+* ... do magic
 
-        logits = self.qa_outputs(sequence_output)
-        start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1)
-        end_logits = end_logits.squeeze(-1)
-
-        total_loss = None
-        if start_positions is not None and end_positions is not None:
-            # If we are on multi-GPU, split add a dimension
-            if len(start_positions.size()) > 1:
-                start_positions = start_positions.squeeze(-1)
-            if len(end_positions.size()) > 1:
-                end_positions = end_positions.squeeze(-1)
-            # sometimes the start/end positions are outside our model inputs, we ignore these terms
-            ignored_index = start_logits.size(1)
-            start_positions.clamp_(0, ignored_index)
-            end_positions.clamp_(0, ignored_index)
-
-            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
-            start_loss = loss_fct(start_logits, start_positions)
-            end_loss = loss_fct(end_logits, end_positions)
-            total_loss = (start_loss + end_loss) / 2
-
-        if not return_dict:
-            output = (start_logits, end_logits) + outputs[2:]
-            return ((total_loss,) + output) if total_loss is not None else output
-
-        return QuestionAnsweringModelOutput(
-            loss=total_loss,
-            start_logits=start_logits,
-            end_logits=end_logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-
-@add_start_docstrings(
-    """
-    CBert Model with a multiple choice classification head on top (a linear layer on top of the pooled output and a
-    softmax) e.g. for RocStories/SWAG tasks.
-    """,
-    CBERT_START_DOCSTRING,
-)
-class CBertForMultipleChoice(CBertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-
-        self.cbert = CBertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, 1)
-
-        self.init_weights()
-
-    @add_start_docstrings_to_model_forward(CBERT_INPUTS_DOCSTRING.format("batch_size, num_choices, sequence_length"))
-    @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
-        checkpoint="cbert-base-v2",
-        output_type=MultipleChoiceModelOutput,
-        config_class=_CONFIG_FOR_DOC,
-    )
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        r"""
-        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
-            Labels for computing the multiple choice classification loss. Indices should be in ``[0, ...,
-            num_choices-1]`` where `num_choices` is the size of the second dimension of the input tensors. (see
-            `input_ids` above)
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        num_choices = input_ids.shape[1] if input_ids is not None else inputs_embeds.shape[1]
-
-        input_ids = input_ids.view(-1, input_ids.size(-1)) if input_ids is not None else None
-        attention_mask = attention_mask.view(-1, attention_mask.size(-1)) if attention_mask is not None else None
-        token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1)) if token_type_ids is not None else None
-        position_ids = position_ids.view(-1, position_ids.size(-1)) if position_ids is not None else None
-        inputs_embeds = (
-            inputs_embeds.view(-1, inputs_embeds.size(-2), inputs_embeds.size(-1))
-            if inputs_embeds is not None
-            else None
-        )
-        outputs = self.cbert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        pooled_output = outputs[1]
-
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-        reshaped_logits = logits.view(-1, num_choices)
-
-        loss = None
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(reshaped_logits, labels)
-
-        if not return_dict:
-            output = (reshaped_logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
-        return MultipleChoiceModelOutput(
-            loss=loss,
-            logits=reshaped_logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+"""

@@ -18,62 +18,22 @@
 
 from typing import TYPE_CHECKING
 
-from ...file_utils import (
-    _BaseLazyModule,
-    is_sentencepiece_available,
-    is_tf_available,
-    is_tokenizers_available,
-    is_torch_available,
-)
+from ...file_utils import _BaseLazyModule, is_torch_available
 
 
 _import_structure = {
-    "configuration_cbert": ["CBERT_PRETRAINED_CONFIG_ARCHIVE_MAP", "CBertConfig"],
+    "configuration_cbert": ["CBertConfig"],
 }
 
-if is_sentencepiece_available():
-    _import_structure["tokenization_cbert"] = ["CBertTokenizer"]
-
-if is_tokenizers_available():
-    _import_structure["tokenization_cbert_fast"] = ["CBertTokenizerFast"]
-
 if is_torch_available():
-    _import_structure["modeling_cbert"] = [
-        "CBERT_PRETRAINED_MODEL_ARCHIVE_LIST",
-        "CBertForMaskedLM",
-        "CBertForMultipleChoice",
-        "CBertForPreTraining",
-        "CBertForQuestionAnswering",
-        "CBertForSequenceClassification",
-        "CBertForTokenClassification",
-        "CBertModel",
-        "CBertPreTrainedModel",
-        "load_tf_weights_in_cbert",
-    ]
+    _import_structure["modeling_cbert"] = ["CBertModel"]
 
 
 if TYPE_CHECKING:
-    from .configuration_cbert import CBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, CBertConfig
-
-    if is_sentencepiece_available():
-        from .tokenization_cbert import CBertTokenizer
-
-    if is_tokenizers_available():
-        from .tokenization_cbert_fast import CBertTokenizerFast
+    from .configuration_cbert import CBertConfig
 
     if is_torch_available():
-        from .modeling_cbert import (
-            CBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-            CBertForMaskedLM,
-            CBertForMultipleChoice,
-            CBertForPreTraining,
-            CBertForQuestionAnswering,
-            CBertForSequenceClassification,
-            CBertForTokenClassification,
-            CBertModel,
-            CBertPreTrainedModel,
-            load_tf_weights_in_cbert,
-        )
+        from .modeling_cbert import CBertModel
 
 else:
     import importlib

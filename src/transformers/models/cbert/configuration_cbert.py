@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Copyright 2020 The HuggingFace Inc. team.
 # Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,141 +13,106 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" CBERT model configuration """
+
+import copy
 
 from ...configuration_utils import PretrainedConfig
+from ...utils import logging
 
 
-CBERT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    #"cbert-base-v1": "https://huggingface.co/albert-base-v1/resolve/main/config.json",
-    #"cbert-large-v1": "https://huggingface.co/albert-large-v1/resolve/main/config.json",
-    #"cbert-xlarge-v1": "https://huggingface.co/albert-xlarge-v1/resolve/main/config.json",
-    #"cbert-xxlarge-v1": "https://huggingface.co/albert-xxlarge-v1/resolve/main/config.json",
-    #"cbert-base-v2": "https://huggingface.co/albert-base-v2/resolve/main/config.json",
-    #"cbert-large-v2": "https://huggingface.co/albert-large-v2/resolve/main/config.json",
-    #"cbert-xlarge-v2": "https://huggingface.co/albert-xlarge-v2/resolve/main/config.json",
-    #"cbert-xxlarge-v2": "https://huggingface.co/albert-xxlarge-v2/resolve/main/config.json",
-}
+logger = logging.get_logger(__name__)
 
 
 class CBertConfig(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a :class:`~transformers.CBertModel` or a
-    :class:`~transformers.TFCBertModel`. It is used to instantiate an CBERT model according to the specified
-    arguments, defining the model architecture. Instantiating a configuration with the defaults will yield a similar
-    configuration to that of the CBERT `xxlarge <https://huggingface.co/albert-xxlarge-v2>`__ architecture.
+    :class:`~transformers.CBertConfig` is the configuration class to store the configuration of a
+    :class:`~transformers.CBertModel`. It is used to instantiate an Encoder Decoder model according to the
+    specified arguments, defining the encoder and decoder configs.
 
     Configuration objects inherit from :class:`~transformers.PretrainedConfig` and can be used to control the model
     outputs. Read the documentation from :class:`~transformers.PretrainedConfig` for more information.
 
     Args:
-        vocab_size (:obj:`int`, `optional`, defaults to 30000):
-            Vocabulary size of the CBERT model. Defines the number of different tokens that can be represented by the
-            :obj:`inputs_ids` passed when calling :class:`~transformers.CBertModel` or
-            :class:`~transformers.TFCBertModel`.
-        embedding_size (:obj:`int`, `optional`, defaults to 128):
-            Dimensionality of vocabulary embeddings.
-        hidden_size (:obj:`int`, `optional`, defaults to 4096):
-            Dimensionality of the encoder layers and the pooler layer.
-        num_hidden_layers (:obj:`int`, `optional`, defaults to 12):
-            Number of hidden layers in the Transformer encoder.
-        num_hidden_groups (:obj:`int`, `optional`, defaults to 1):
-            Number of groups for the hidden layers, parameters in the same group are shared.
-        num_attention_heads (:obj:`int`, `optional`, defaults to 64):
-            Number of attention heads for each attention layer in the Transformer encoder.
-        intermediate_size (:obj:`int`, `optional`, defaults to 16384):
-            The dimensionality of the "intermediate" (often named feed-forward) layer in the Transformer encoder.
-        inner_group_num (:obj:`int`, `optional`, defaults to 1):
-            The number of inner repetition of attention and ffn.
-        hidden_act (:obj:`str` or :obj:`Callable`, `optional`, defaults to :obj:`"gelu_new"`):
-            The non-linear activation function (function or string) in the encoder and pooler. If string,
-            :obj:`"gelu"`, :obj:`"relu"`, :obj:`"silu"` and :obj:`"gelu_new"` are supported.
-        hidden_dropout_prob (:obj:`float`, `optional`, defaults to 0):
-            The dropout probability for all fully connected layers in the embeddings, encoder, and pooler.
-        attention_probs_dropout_prob (:obj:`float`, `optional`, defaults to 0):
-            The dropout ratio for the attention probabilities.
-        max_position_embeddings (:obj:`int`, `optional`, defaults to 512):
-            The maximum sequence length that this model might ever be used with. Typically set this to something large
-            (e.g., 512 or 1024 or 2048).
-        type_vocab_size (:obj:`int`, `optional`, defaults to 2):
-            The vocabulary size of the :obj:`token_type_ids` passed when calling :class:`~transformers.CBertModel` or
-            :class:`~transformers.TFCBertModel`.
-        initializer_range (:obj:`float`, `optional`, defaults to 0.02):
-            The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
-        layer_norm_eps (:obj:`float`, `optional`, defaults to 1e-12):
-            The epsilon used by the layer normalization layers.
-        classifier_dropout_prob (:obj:`float`, `optional`, defaults to 0.1):
-            The dropout ratio for attached classifiers.
-        position_embedding_type (:obj:`str`, `optional`, defaults to :obj:`"absolute"`):
-            Type of position embedding. Choose one of :obj:`"absolute"`, :obj:`"relative_key"`,
-            :obj:`"relative_key_query"`. For positional embeddings use :obj:`"absolute"`. For more information on
-            :obj:`"relative_key"`, please refer to `Self-Attention with Relative Position Representations (Shaw et al.)
-            <https://arxiv.org/abs/1803.02155>`__. For more information on :obj:`"relative_key_query"`, please refer to
-            `Method 4` in `Improve Transformer Models with Better Relative Position Embeddings (Huang et al.)
-            <https://arxiv.org/abs/2009.13658>`__.
+        kwargs (`optional`):
+            Dictionary of keyword arguments. Notably:
+
+                - **encoder** (:class:`~transformers.PretrainedConfig`, `optional`) -- An instance of a configuration
+                  object that defines the encoder config.
+                - **decoder** (:class:`~transformers.PretrainedConfig`, `optional`) -- An instance of a configuration
+                  object that defines the decoder config.
 
     Examples::
 
-        >>> from transformers import CBertConfig, CBertModel
-        >>> # Initializing an CBERT-xxlarge style configuration
-        >>> cbert_xxlarge_configuration = CBertConfig()
+        >>> from transformers import BertConfig, CBertConfig, CBertModel
 
-        >>> # Initializing an CBERT-base style configuration
-        >>> cbert_base_configuration = CBertConfig(
-        ...      hidden_size=768,
-        ...      num_attention_heads=12,
-        ...      intermediate_size=3072,
-        ...  )
+        >>> # Initializing a BERT bert-base-uncased style configuration
+        >>> config_encoder = BertConfig()
+        >>> config_decoder = BertConfig()
 
-        >>> # Initializing a model from the CBERT-base style configuration
-        >>> model = CBertModel(cbert_xxlarge_configuration)
+        >>> config = CBertConfig.from_encode_decoder_configs(config_encoder, config_decoder)
+
+        >>> # Initializing a Bert2Bert model from the bert-base-uncased style configurations
+        >>> model = CBertModel(config=config)
 
         >>> # Accessing the model configuration
-        >>> configuration = model.config
+        >>> config_encoder = model.config.encoder
+        >>> config_decoder  = model.config.decoder
+        >>> # set decoder config to causal lm
+        >>> config_decoder.is_decoder = True
+        >>> config_decoder.add_cross_attention = True
+
+        >>> # Saving the model, including its configuration
+        >>> model.save_pretrained('my-model')
+
+        >>> # loading model and config from pretrained folder
+        >>> cbert_config = CBertConfig.from_pretrained('my-model')
+        >>> model = CBertModel.from_pretrained('my-model', config=cbert_config)
     """
-
     model_type = "cbert"
+    is_composition = True
 
-    def __init__(
-        self,
-        vocab_size=30000,
-        embedding_size=128,
-        hidden_size=4096,
-        num_hidden_layers=12,
-        num_hidden_groups=1,
-        num_attention_heads=64,
-        intermediate_size=16384,
-        inner_group_num=1,
-        hidden_act="gelu_new",
-        hidden_dropout_prob=0,
-        attention_probs_dropout_prob=0,
-        max_position_embeddings=512,
-        type_vocab_size=2,
-        initializer_range=0.02,
-        layer_norm_eps=1e-12,
-        classifier_dropout_prob=0.1,
-        position_embedding_type="absolute",
-        pad_token_id=0,
-        bos_token_id=2,
-        eos_token_id=3,
-        **kwargs
-    ):
-        super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        assert (
+            "encoder" in kwargs and "decoder" in kwargs
+        ), "Config has to be initialized with encoder and decoder config"
+        encoder_config = kwargs.pop("encoder")
+        encoder_model_type = encoder_config.pop("model_type")
+        decoder_config = kwargs.pop("decoder")
+        decoder_model_type = decoder_config.pop("model_type")
 
-        self.vocab_size = vocab_size
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-        self.num_hidden_layers = num_hidden_layers
-        self.num_hidden_groups = num_hidden_groups
-        self.num_attention_heads = num_attention_heads
-        self.inner_group_num = inner_group_num
-        self.hidden_act = hidden_act
-        self.intermediate_size = intermediate_size
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.max_position_embeddings = max_position_embeddings
-        self.type_vocab_size = type_vocab_size
-        self.initializer_range = initializer_range
-        self.layer_norm_eps = layer_norm_eps
-        self.classifier_dropout_prob = classifier_dropout_prob
-        self.position_embedding_type = position_embedding_type
+        from ..auto.configuration_auto import AutoConfig
+
+        self.encoder = AutoConfig.for_model(encoder_model_type, **encoder_config)
+        self.decoder = AutoConfig.for_model(decoder_model_type, **decoder_config)
+        self.is_encoder_decoder = True
+
+    @classmethod
+    def from_encode_decoder_configs(
+        cls, encoder_config: PretrainedConfig, decoder_config: PretrainedConfig, **kwargs
+    ) -> PretrainedConfig:
+        r"""
+        Instantiate a :class:`~transformers.CBertConfig` (or a derived class) from a pre-trained encoder model
+        configuration and decoder model configuration.
+
+        Returns:
+            :class:`CBertConfig`: An instance of a configuration object
+        """
+        logger.info("Set `config.is_decoder=True` and `config.add_cross_attention=True` for decoder_config")
+        decoder_config.is_decoder = True
+        decoder_config.add_cross_attention = True
+
+        return cls(encoder=encoder_config.to_dict(), decoder=decoder_config.to_dict(), **kwargs)
+
+    def to_dict(self):
+        """
+        Serializes this instance to a Python dictionary. Override the default `to_dict()` from `PretrainedConfig`.
+
+        Returns:
+            :obj:`Dict[str, any]`: Dictionary of all the attributes that make up this configuration instance,
+        """
+        output = copy.deepcopy(self.__dict__)
+        output["encoder"] = self.encoder.to_dict()
+        output["decoder"] = self.decoder.to_dict()
+        output["model_type"] = self.__class__.model_type
+        return output
