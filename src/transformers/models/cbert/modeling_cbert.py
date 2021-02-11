@@ -413,19 +413,6 @@ class CBertModel(PreTrainedModel):
             **teacher_kwargs
         )
 
-        # TODO: is this enabled by default?
-        # tie encoder, decoder weights if config set accordingly
-        self.tie_weights()
-
-    def tie_weights(self):
-        # tie encoder & decoder if needed
-        if self.config.tie_encoder_decoder:
-            # tie encoder and decoder base model
-            decoder_base_model_prefix = self.get_decoder().base_model_prefix
-            self._tie_encoder_decoder_weights(
-                self.student, self.get_decoder()._modules[decoder_base_model_prefix], self.get_decoder().base_model_prefix
-            )
-
     def get_encoder(self):
         return self.student
 
