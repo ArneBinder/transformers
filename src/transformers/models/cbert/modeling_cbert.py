@@ -161,15 +161,16 @@ class PredictionHeadTransform(torch.nn.Module):
 
 
 class LMPredictionHead(torch.nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, vocab_size = None):
         super().__init__()
         self.transform = PredictionHeadTransform(config)
 
+        vocab_size = vocab_size or config.vocab_size
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
-        self.decoder = torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.decoder = torch.nn.Linear(config.hidden_size, vocab_size, bias=False)
 
-        self.bias = torch.nn.Parameter(torch.zeros(config.vocab_size))
+        self.bias = torch.nn.Parameter(torch.zeros(vocab_size))
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
@@ -209,6 +210,13 @@ class CBertModel(PreTrainedModel):
         # initialize with config
         super().__init__(config)
 
+        # If True, predict a certain replacement token from the encode vocabulary for each slot. 
+        # Otherwise, predict one of: mask token or random token
+        self.predict_replacement_tokens = False
+
+        # TODO: get that from model/tokenizer
+        self.mask_token_id = 103
+
         if encoder is None:
             #from ..auto.modeling_auto import AutoModel
             from ..auto.modeling_auto import AutoModelForMaskedLM
@@ -231,7 +239,7 @@ class CBertModel(PreTrainedModel):
         # TODO: parametrize number of slots (or/and make dependent on sequence length)
         self.decoder.resize_token_embeddings(100)
 
-        self.slot_lm_head = LMPredictionHead(self.encoder.config)
+        self.slot_replacement_head = LMPredictionHead(self.encoder.config, vocab_size=self.encoder.config.vocab_size if self.predict_replacement_tokens else 2)
 
         # TODO: is this enabled by default?
         # tie encoder, decoder weights if config set accordingly
@@ -532,12 +540,25 @@ class CBertModel(PreTrainedModel):
         keep_embeds = inputs_embeds * keep_prob.unsqueeze(-1)
         # calc replaced input
         token_slot_probs = m[:,:,1:]
-        slot_prediction_scores = self.slot_lm_head(decoder_hidden_states)
-        # TODO: is this softmax required?
-        slot_probs = torch.softmax(slot_prediction_scores, dim=-1)
-        token_swap_probs = torch.matmul(token_slot_probs, slot_probs)
-        embedding_weights = self.encoder.get_input_embeddings().weight
-        replace_embeds = torch.matmul(token_swap_probs, embedding_weights)
+        replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
+        # TODO: use gumble softmax also here?
+        replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
+        # (batch, time, slot), (batch, slot, replacement) -> (batch, time, replacement)
+        #token_replacement_probs = torch.matmul(token_slot_probs, replacement_type_probs)
+        replacement_probs = torch.einsum("bts, bsr -> btr", token_slot_probs, replacement_type_probs)
+
+        if self.predict_replacement_tokens:
+            embedding_weights = self.encoder.get_input_embeddings().weight
+            # (batch, time, token), (token, dim) -> (batch, time, dim) 
+            replace_embeds = torch.matmul(replacement_probs, embedding_weights)
+        else:
+            random_token_ids = torch.randint(self.encoder.config.vocab_size, labels.shape, dtype=torch.long, device=replacement_probs.device)
+            mask_token_ids = torch.ones_like(random_token_ids) * self.mask_token_id
+            replace_ids = torch.stack([mask_token_ids, random_token_ids], dim=-1)
+            embedding_weights = self.encoder.get_input_embeddings()(replace_ids)
+            # (batch, time, i), (batch, time, i, embedding) -> (batch, time, embedding)
+            replace_embeds = torch.einsum("bti, btie -> bte", replacement_probs, embedding_weights)
+        
 
         new_input_embeds = keep_embeds + replace_embeds
 
