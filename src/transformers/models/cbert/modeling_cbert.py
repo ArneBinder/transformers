@@ -170,27 +170,19 @@ def get_delta(r, dim, exclude=None):
             raise Exception(f"exclusion for dim={dim} not supported")
     return d
 
-def sinkhorn_sorting_operator(r, n_iters=8, exclude_dim_1=None, exclude_dim_2=None):
+def sinkhorn_sorting_operator(r, n_iters=8):
     n = r.shape[1]
     for _ in range(n_iters):
-        # note: the order was switched here
-        r = r - get_delta(r, dim=1, exclude=exclude_dim_2)
-        r = r - get_delta(r, dim=2, exclude=exclude_dim_1)
-
-        #d = torch.logsumexp(r, dim=1, keepdim=True)
-        #if exclude_dim_2 is not None:
-        #    r -= d
-        #else:
-        #    r -= d
-        #d = torch.logsumexp(r, dim=2, keepdim=True)
-        #r -= d
+        r = r - torch.logsumexp(r, dim=2, keepdim=True)
+        r = r - torch.logsumexp(r, dim=1, keepdim=True)
     return torch.exp(r)
 
-def gumbel_sinkhorn(r, n_iters=8, temperature=0.7, exclude_dim_1=None, exclude_dim_2=None):
+def gumbel_sinkhorn(r, n_iters=8, temperature=0.7):
     r = log(r)
     gumbel = sample_gumbel(r.shape, r.device, r.dtype)
     r = (r + gumbel) / temperature
-    return sinkhorn_sorting_operator(r, n_iters, exclude_dim_1, exclude_dim_2)
+    return sinkhorn_sorting_operator(r, n_iters)
+
 ####
 
 class PredictionHeadTransform(torch.nn.Module):
@@ -553,6 +545,7 @@ class CBertModel(PreTrainedModel):
         
         encoder_hidden_states = encoder_outputs.hidden_states[-1]
         bs = labels.size(0)
+        sl = labels.size(1)
         num_slots = self.decoder.get_input_embeddings().num_embeddings
         decoder_input_ids = torch.stack(bs * [torch.arange(num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
         
@@ -588,8 +581,8 @@ class CBertModel(PreTrainedModel):
         # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
         m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
         # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
-        c = torch.ones_like(m[:,:,0]) * self.c_keep
-        m = torch.cat([c.unsqueeze(-1), m], dim=-1)
+        c = torch.ones(size=(bs, sl, sl-num_slots), device=m.device) * self.c_keep
+        m = torch.cat([m, c], dim=-1)
         # "mask" special tokens (set to very negative value)
         # TODO
 
@@ -600,20 +593,19 @@ class CBertModel(PreTrainedModel):
         #m = torch.softmax(m, dim=-1)
         ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
 
-        # discretize, but not along first column which represents the "dummy" slot indicating to keep the original input
         # TODO: check if gumbel_sinkhorn really requires positive values
         m = torch.nn.functional.relu(m)
-        m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature, exclude_dim_2=0)
+        m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature)#, exclude_dim_2=0)
         # create a hard mask to prevent any leakage of information
         m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
-        
+
         # calc kept input
-        keep_prob = m[:,:,0]
+        keep_prob = m[:,:,num_slots:].sum(dim=-1, keepdims=True)
         if inputs_embeds is None:
             inputs_embeds = self.encoder.get_input_embeddings()(input_ids)
-        keep_embeds = inputs_embeds * keep_prob.unsqueeze(-1)
+        keep_embeds = inputs_embeds * keep_prob
         # calc content replacement scores: assign slot content to token postions 
-        token_slot_probs = m[:,:,1:]
+        token_slot_probs = m[:,:,:num_slots]
         replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
         # TODO: use gumbel softmax also here?
         replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
@@ -638,7 +630,7 @@ class CBertModel(PreTrainedModel):
         # create "label mask" from m: only replaced tokens should be considered for loss prediction
         m_argmax = m.max(dim=-1)[1]
         new_labels = labels.clone()
-        new_labels[m_argmax==0] = -100
+        new_labels[m_argmax>=num_slots] = -100
         
         # TODO: stop gradient flow here for student training (or use dedicated optimizer for the trainer and student)
 
