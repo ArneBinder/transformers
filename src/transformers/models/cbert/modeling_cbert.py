@@ -142,6 +142,41 @@ CBERT_INPUTS_DOCSTRING = r"""
             - With a `decoder_` prefix which will be input as ``**decoder_kwargs`` for the decoder forward function.
 """
 
+#### taken from https://github.com/lucidrains/sinkhorn-transformer/blob/master/sinkhorn_transformer/sinkhorn_transformer.py
+# and modified
+def log(t, eps = 1e-6):
+    return torch.log(t + eps)
+
+def sample_gumbel(shape, device, dtype, eps=1e-5):
+    u = torch.empty(shape, device=device, dtype=dtype).uniform_(0, 1)
+    return -log(-log(u, eps), eps)
+
+# modification: allow to exclude certain row/column TODO: check, if that works!
+def get_delta(r, dim, exclude=None):
+    d = torch.logsumexp(r, dim=dim, keepdim=True)
+    if exclude is not None:
+        if dim == 1:
+            d[:,:,exclude] = 0.0
+        elif dim == 2:
+            d[:,exclude,:] = 0.0
+        else:
+            raise Exception(f"exclusion for dim={dim} not supported")
+    return d
+
+def sinkhorn_sorting_operator(r, n_iters=8, exclude_dim_1=None, exclude_dim_2=None):
+    n = r.shape[1]
+    for _ in range(n_iters):
+        # note: the order was switched here
+        r = r - get_delta(r, dim=1, exclude=exclude_dim_2)
+        r = r - get_delta(r, dim=2, exclude=exclude_dim_1)
+    return torch.exp(r)
+
+def gumbel_sinkhorn(r, n_iters=8, temperature=0.7, exclude_dim_1=None, exclude_dim_2=None):
+    r = log(r)
+    gumbel = sample_gumbel(r.shape, r.device, r.dtype)
+    r = (r + gumbel) / temperature
+    return sinkhorn_sorting_operator(r, n_iters, exclude_dim_1, exclude_dim_2)
+####
 
 class PredictionHeadTransform(torch.nn.Module):
     def __init__(self, config):
@@ -214,8 +249,16 @@ class CBertModel(PreTrainedModel):
         # Otherwise, predict one of: mask token or random token
         self.predict_replacement_tokens = False
 
+        self.gumbel_temperature = 1.
+
         # TODO: get that from model/tokenizer
         self.mask_token_id = 103
+
+        # TODO: take from model (attention: encoder.config.max_length is different!!)
+        self.max_sequence_length = 512
+
+        # TODO: parametrize 
+        self.mlm_percentage = 0.15
 
         if encoder is None:
             #from ..auto.modeling_auto import AutoModel
@@ -236,10 +279,12 @@ class CBertModel(PreTrainedModel):
         #    self.encoder.get_output_embeddings() is None
         #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
 
-        # TODO: parametrize number of slots (or/and make dependent on sequence length)
-        self.decoder.resize_token_embeddings(100)
+        self.decoder.resize_token_embeddings(round(self.max_sequence_length * self.mlm_percentage))
 
         self.slot_replacement_head = LMPredictionHead(self.encoder.config, vocab_size=self.encoder.config.vocab_size if self.predict_replacement_tokens else 2)
+
+        # TODO: check initialization
+        self.c_keep = torch.nn.Parameter(torch.ones(1))
 
         # TODO: is this enabled by default?
         # tie encoder, decoder weights if config set accordingly
@@ -516,32 +561,44 @@ class CBertModel(PreTrainedModel):
         )       
         decoder_hidden_states =  decoder_outputs.last_hidden_state
         
-        # Here, we calculate the masked input (TODO: use gumble softmax!)
+        # Here, we calculate the masked input (TODO: use gumbel softmax!)
         
         # project token encodings (encoder_hidden_states) 
         # TODO
         # project slot encodings (decoder_hidden_states)
         # TODO
-        # create matrix: token positions x number of slots
+        # calc position replacement scores: assign slots to token positions
+        # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
         m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
+        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
+        c = torch.ones_like(m[:,:,0]) * self.c_keep
+        m = torch.cat([c.unsqueeze(-1), m], dim=-1)
         # "mask" special tokens (set to very negative value)
         # TODO
-        # softmax over token positions (TODO: use gumble!)
-        m = torch.softmax(m, dim=1)
-        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
-        c = torch.ones_like(m[:,:,0]) * 1 / num_slots
-        m = torch.cat([c.unsqueeze(-1), m], dim=-1)
-        # softmax over slots (TODO: use gumble!)
-        m = torch.softmax(m, dim=-1)
+
+        ## softmax over token positions (TODO: use gumbel!)
+        #m = torch.softmax(m, dim=1)
+        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
+        ## softmax over slots (TODO: use gumbel!)
+        #m = torch.softmax(m, dim=-1)
+        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
+
+        # discretize, but not along first column which represents the "dummy" slot indicating to keep the original input
+        # TODO: check if gumbel_sinkhorn really requires positive values
+        m = torch.nn.functional.relu(m)
+        m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature, exclude_dim_2=0)
+        # create a hard mask to prevent any leakage of information
+        m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
+        
         # calc kept input
         keep_prob = m[:,:,0]
         if inputs_embeds is None:
             inputs_embeds = self.encoder.get_input_embeddings()(input_ids)
         keep_embeds = inputs_embeds * keep_prob.unsqueeze(-1)
-        # calc replaced input
+        # calc content replacement scores: assign slot content to token postions 
         token_slot_probs = m[:,:,1:]
         replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
-        # TODO: use gumble softmax also here?
+        # TODO: use gumbel softmax also here?
         replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
         # (batch, time, slot), (batch, slot, replacement) -> (batch, time, replacement)
         #token_replacement_probs = torch.matmul(token_slot_probs, replacement_type_probs)
@@ -559,7 +616,6 @@ class CBertModel(PreTrainedModel):
             # (batch, time, i), (batch, time, i, embedding) -> (batch, time, embedding)
             replace_embeds = torch.einsum("bti, btie -> bte", replacement_probs, embedding_weights)
         
-
         new_input_embeds = keep_embeds + replace_embeds
 
         # create "label mask" from m: only replaced tokens should be considered for loss prediction
