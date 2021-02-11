@@ -223,6 +223,146 @@ class LMPredictionHead(torch.nn.Module):
         return hidden_states
 
 
+class Teacher(torch.nn.Module):
+    def __init__(
+        self,
+        decoder: PreTrainedModel,
+        encoder_config: PretrainedConfig,
+        encoder_embeddings: torch.nn.Embedding,
+        # If True, predict a certain replacement token from the encoder vocabulary for each slot. 
+        # Otherwise, predict one of: mask token or random token
+        predict_replacement_tokens: Optional[bool] = False,
+        gumbel_temperature: Optional[float] = 1.,
+        # TODO: get that from model/tokenizer
+        mask_token_id: Optional[int] = 103,
+        # TODO: take from model (attention: encoder.config.max_length is different!!)
+        max_sequence_length: Optional[int] = 512,
+        # TODO: parametrize 
+        mlm_percentage: Optional[float] = 0.15,
+    ):  
+        super().__init__()
+        self.encoder_config = encoder_config
+        self.encoder_embeddings = encoder_embeddings
+        self.predict_replacement_tokens = predict_replacement_tokens
+        self.gumbel_temperature = gumbel_temperature
+        self.mask_token_id = mask_token_id
+        self.max_sequence_length = max_sequence_length
+        self.mlm_percentage = mlm_percentage
+        self.num_slots = round(self.max_sequence_length * self.mlm_percentage)
+        self.decoder = decoder
+        # TODO: add similar assertion for decoder
+        #assert (
+        #    self.encoder.get_output_embeddings() is None
+        #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
+
+        self.slot_replacement_head = LMPredictionHead(encoder_config, vocab_size=encoder_config.vocab_size if self.predict_replacement_tokens else 2)
+        # TODO: check initialization
+        self.c_keep = torch.nn.Parameter(torch.ones(1))
+
+        self.decoder.resize_token_embeddings(self.num_slots)
+        
+
+    def forward(
+        self,
+        inputs_embeds,
+        encoder_hidden_states, 
+        labels,
+        encoder_attention_mask,
+        decoder_attention_mask,
+        use_cache,
+        past_key_values,
+        return_dict,
+        kwargs_decoder,
+    ):
+        #encoder_hidden_states = encoder_outputs.hidden_states[-1]
+        bs = labels.size(0)
+        sl = labels.size(1)
+        decoder_input_ids = torch.stack(bs * [torch.arange(self.num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
+        
+        # TODO: stop gradient flow here
+
+        encoder_hidden_states = encoder_hidden_states.detach()
+        
+        # Decode
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            #inputs_embeds=decoder_inputs_embeds,
+            #labels=labels,
+            #output_attentions=output_attentions,
+            output_attentions=False,
+            #output_hidden_states=output_hidden_states,
+            output_hidden_states=False,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
+            return_dict=return_dict,
+            **kwargs_decoder,
+        )       
+        decoder_hidden_states =  decoder_outputs.last_hidden_state
+        
+        # Here, we calculate the masked input (TODO: use gumbel softmax!)
+        
+        # project token encodings (encoder_hidden_states) 
+        # TODO
+        # project slot encodings (decoder_hidden_states)
+        # TODO
+        # calc position replacement scores: assign slots to token positions
+        # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
+        m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
+        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
+        c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
+        m = torch.cat([m, c], dim=-1)
+        # "mask" special tokens (set to very negative value)
+        # TODO
+
+        ## softmax over token positions (TODO: use gumbel!)
+        #m = torch.softmax(m, dim=1)
+        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
+        ## softmax over slots (TODO: use gumbel!)
+        #m = torch.softmax(m, dim=-1)
+        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
+
+        # TODO: check if gumbel_sinkhorn really requires positive values
+        m = torch.nn.functional.relu(m)
+        m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature)#, exclude_dim_2=0)
+        # create a hard mask to prevent any leakage of information
+        m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
+
+        # calc kept input
+        keep_prob = m[:,:,self.num_slots:].sum(dim=-1, keepdims=True)
+        keep_embeds = inputs_embeds * keep_prob
+        # calc content replacement scores: assign slot content to token postions 
+        token_slot_probs = m[:,:,:self.num_slots]
+        replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
+        # TODO: use gumbel softmax also here?
+        replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
+        # (batch, time, slot), (batch, slot, replacement) -> (batch, time, replacement)
+        #token_replacement_probs = torch.matmul(token_slot_probs, replacement_type_probs)
+        replacement_probs = torch.einsum("bts, bsr -> btr", token_slot_probs, replacement_type_probs)
+
+        if self.predict_replacement_tokens:
+            embedding_weights = self.encoder_embeddings.weight
+            # (batch, time, token), (token, dim) -> (batch, time, dim) 
+            replace_embeds = torch.matmul(replacement_probs, embedding_weights)
+        else:
+            random_token_ids = torch.randint(self.encoder_config.vocab_size, labels.shape, dtype=torch.long, device=replacement_probs.device)
+            mask_token_ids = torch.ones_like(random_token_ids) * self.mask_token_id
+            replace_ids = torch.stack([mask_token_ids, random_token_ids], dim=-1)
+            embedding_weights = self.encoder_embeddings(replace_ids)
+            # (batch, time, i), (batch, time, i, embedding) -> (batch, time, embedding)
+            replace_embeds = torch.einsum("bti, btie -> bte", replacement_probs, embedding_weights)
+        
+        new_input_embeds = keep_embeds + replace_embeds
+
+        # create "label mask" from m: only replaced tokens should be considered for loss prediction
+        m_argmax = m.max(dim=-1)[1]
+        new_labels = labels.clone()
+        new_labels[m_argmax>=self.num_slots] = -100
+        
+        return new_input_embeds, new_labels
+
 @add_start_docstrings(CBERT_START_DOCSTRING)
 class CBertModel(PreTrainedModel):
     r"""
@@ -239,6 +379,7 @@ class CBertModel(PreTrainedModel):
         config: Optional[PretrainedConfig] = None,
         encoder: Optional[PreTrainedModel] = None,
         decoder: Optional[PreTrainedModel] = None,
+        **teacher_kwargs
     ):
         assert config is not None or (
             encoder is not None and decoder is not None
@@ -252,46 +393,25 @@ class CBertModel(PreTrainedModel):
         # initialize with config
         super().__init__(config)
 
-        # If True, predict a certain replacement token from the encode vocabulary for each slot. 
-        # Otherwise, predict one of: mask token or random token
-        self.predict_replacement_tokens = False
-
-        self.gumbel_temperature = 1.
-
-        # TODO: get that from model/tokenizer
-        self.mask_token_id = 103
-
-        # TODO: take from model (attention: encoder.config.max_length is different!!)
-        self.max_sequence_length = 512
-
-        # TODO: parametrize 
-        self.mlm_percentage = 0.15
-
         if encoder is None:
             #from ..auto.modeling_auto import AutoModel
             from ..auto.modeling_auto import AutoModelForMaskedLM
 
             encoder = AutoModelForMaskedLM.from_config(config.encoder)
-
         if decoder is None:
             #from ..auto.modeling_auto import AutoModelForCausalLM
             from ..auto.modeling_auto import AutoModel
 
             decoder = AutoModel.from_config(config.decoder)
 
-        self.encoder = encoder
-        self.decoder = decoder
-        # TODO: add similar assertion for decoder
-        #assert (
-        #    self.encoder.get_output_embeddings() is None
-        #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
-
-        self.decoder.resize_token_embeddings(round(self.max_sequence_length * self.mlm_percentage))
-
-        self.slot_replacement_head = LMPredictionHead(self.encoder.config, vocab_size=self.encoder.config.vocab_size if self.predict_replacement_tokens else 2)
-
-        # TODO: check initialization
-        self.c_keep = torch.nn.Parameter(torch.ones(1))
+        
+        self.student = encoder
+        self.teacher = Teacher(
+            decoder=decoder, 
+            encoder_config=self.student.config, 
+            encoder_embeddings=self.student.get_input_embeddings(), 
+            **teacher_kwargs
+        )
 
         # TODO: is this enabled by default?
         # tie encoder, decoder weights if config set accordingly
@@ -301,25 +421,25 @@ class CBertModel(PreTrainedModel):
         # tie encoder & decoder if needed
         if self.config.tie_encoder_decoder:
             # tie encoder and decoder base model
-            decoder_base_model_prefix = self.decoder.base_model_prefix
+            decoder_base_model_prefix = self.get_decoder().base_model_prefix
             self._tie_encoder_decoder_weights(
-                self.encoder, self.decoder._modules[decoder_base_model_prefix], self.decoder.base_model_prefix
+                self.student, self.get_decoder()._modules[decoder_base_model_prefix], self.get_decoder().base_model_prefix
             )
 
     def get_encoder(self):
-        return self.encoder
+        return self.student
 
     def get_decoder(self):
-        return self.decoder
+        return self.teacher.decoder
 
     def get_input_embeddings(self):
-        return self.encoder.get_input_embeddings()
+        return self.student.get_input_embeddings()
 
     def get_output_embeddings(self):
-        return self.decoder.get_output_embeddings()
+        return self.get_decoder().get_output_embeddings()
 
     def set_output_embeddings(self, new_embeddings):
-        return self.decoder.set_output_embeddings(new_embeddings)
+        return self.get_decoder().set_output_embeddings(new_embeddings)
 
     @classmethod
     def from_cbert_pretrained(
@@ -529,7 +649,7 @@ class CBertModel(PreTrainedModel):
             labels = input_ids
 
         if encoder_outputs is None:
-            encoder_outputs = self.encoder(
+            encoder_outputs = self.student(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 inputs_embeds=inputs_embeds,
@@ -543,99 +663,25 @@ class CBertModel(PreTrainedModel):
         if not generate_masking:
             return encoder_outputs
         
-        encoder_hidden_states = encoder_outputs.hidden_states[-1]
-        bs = labels.size(0)
-        sl = labels.size(1)
-        num_slots = self.decoder.get_input_embeddings().num_embeddings
-        decoder_input_ids = torch.stack(bs * [torch.arange(num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
-        
-        # TODO: stop gradient flow here
-        encoder_hidden_states = encoder_hidden_states.detach()
-        
-        # Decode
-        decoder_outputs = self.decoder(
-            input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
-            encoder_hidden_states=encoder_hidden_states,
+        # TODO: stop gradient flow here for student training (or use dedicated optimizer for the trainer and student)
+
+        if inputs_embeds is None:
+            inputs_embeds = self.student.get_input_embeddings()(input_ids)
+
+        new_input_embeds, new_labels = self.teacher(
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_outputs.hidden_states[-1], 
+            labels=labels,
             encoder_attention_mask=attention_mask,
-            inputs_embeds=decoder_inputs_embeds,
-            #labels=labels,
-            #output_attentions=output_attentions,
-            output_attentions=False,
-            #output_hidden_states=output_hidden_states,
-            output_hidden_states=False,
+            decoder_attention_mask=decoder_attention_mask,
             use_cache=use_cache,
             past_key_values=past_key_values,
             return_dict=return_dict,
-            **kwargs_decoder,
-        )       
-        decoder_hidden_states =  decoder_outputs.last_hidden_state
-        
-        # Here, we calculate the masked input (TODO: use gumbel softmax!)
-        
-        # project token encodings (encoder_hidden_states) 
-        # TODO
-        # project slot encodings (decoder_hidden_states)
-        # TODO
-        # calc position replacement scores: assign slots to token positions
-        # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
-        m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
-        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
-        c = torch.ones(size=(bs, sl, sl-num_slots), device=m.device) * self.c_keep
-        m = torch.cat([m, c], dim=-1)
-        # "mask" special tokens (set to very negative value)
-        # TODO
-
-        ## softmax over token positions (TODO: use gumbel!)
-        #m = torch.softmax(m, dim=1)
-        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
-        ## softmax over slots (TODO: use gumbel!)
-        #m = torch.softmax(m, dim=-1)
-        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
-
-        # TODO: check if gumbel_sinkhorn really requires positive values
-        m = torch.nn.functional.relu(m)
-        m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature)#, exclude_dim_2=0)
-        # create a hard mask to prevent any leakage of information
-        m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
-
-        # calc kept input
-        keep_prob = m[:,:,num_slots:].sum(dim=-1, keepdims=True)
-        if inputs_embeds is None:
-            inputs_embeds = self.encoder.get_input_embeddings()(input_ids)
-        keep_embeds = inputs_embeds * keep_prob
-        # calc content replacement scores: assign slot content to token postions 
-        token_slot_probs = m[:,:,:num_slots]
-        replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
-        # TODO: use gumbel softmax also here?
-        replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
-        # (batch, time, slot), (batch, slot, replacement) -> (batch, time, replacement)
-        #token_replacement_probs = torch.matmul(token_slot_probs, replacement_type_probs)
-        replacement_probs = torch.einsum("bts, bsr -> btr", token_slot_probs, replacement_type_probs)
-
-        if self.predict_replacement_tokens:
-            embedding_weights = self.encoder.get_input_embeddings().weight
-            # (batch, time, token), (token, dim) -> (batch, time, dim) 
-            replace_embeds = torch.matmul(replacement_probs, embedding_weights)
-        else:
-            random_token_ids = torch.randint(self.encoder.config.vocab_size, labels.shape, dtype=torch.long, device=replacement_probs.device)
-            mask_token_ids = torch.ones_like(random_token_ids) * self.mask_token_id
-            replace_ids = torch.stack([mask_token_ids, random_token_ids], dim=-1)
-            embedding_weights = self.encoder.get_input_embeddings()(replace_ids)
-            # (batch, time, i), (batch, time, i, embedding) -> (batch, time, embedding)
-            replace_embeds = torch.einsum("bti, btie -> bte", replacement_probs, embedding_weights)
-        
-        new_input_embeds = keep_embeds + replace_embeds
-
-        # create "label mask" from m: only replaced tokens should be considered for loss prediction
-        m_argmax = m.max(dim=-1)[1]
-        new_labels = labels.clone()
-        new_labels[m_argmax>=num_slots] = -100
-        
-        # TODO: stop gradient flow here for student training (or use dedicated optimizer for the trainer and student)
+            kwargs_decoder=kwargs_decoder
+        )
 
         # calc loss with new input
-        encoder_outputs = self.encoder(
+        encoder_outputs = self.student(
             input_ids=None,
             attention_mask=attention_mask,
             inputs_embeds=new_input_embeds,
@@ -645,7 +691,9 @@ class CBertModel(PreTrainedModel):
             return_dict=return_dict,
             **kwargs_encoder,
         )
-
+        student_loss = encoder_outputs["loss"]
+        n_predict = sum(new_labels != -100).sum() 
+        student_loss_mean = student_loss / n_predict
         # TODO: calculate trainer loss
 
         return encoder_outputs
@@ -655,7 +703,7 @@ class CBertModel(PreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past=None, attention_mask=None, use_cache=None, encoder_outputs=None, **kwargs
     ):
-        decoder_inputs = self.decoder.prepare_inputs_for_generation(input_ids, past=past)
+        decoder_inputs = self.get_decoder().prepare_inputs_for_generation(input_ids, past=past)
         decoder_attention_mask = decoder_inputs["attention_mask"] if "attention_mask" in decoder_inputs else None
         input_dict = {
             "attention_mask": attention_mask,
@@ -669,4 +717,4 @@ class CBertModel(PreTrainedModel):
 
     def _reorder_cache(self, past, beam_idx):
         # apply decoder cache reordering here
-        return self.decoder._reorder_cache(past, beam_idx)
+        return self.get_decoder()._reorder_cache(past, beam_idx)
