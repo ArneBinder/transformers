@@ -264,29 +264,27 @@ class Teacher(torch.nn.Module):
 
     def forward(
         self,
-        inputs_embeds,
-        encoder_hidden_states, 
         labels,
+        encoder_inputs_embeds,
+        encoder_hidden_states,
         encoder_attention_mask,
-        decoder_attention_mask,
         use_cache,
         past_key_values,
-        return_dict,
         kwargs_decoder,
     ):
-        #encoder_hidden_states = encoder_outputs.hidden_states[-1]
         bs = labels.size(0)
         sl = labels.size(1)
-        decoder_input_ids = torch.stack(bs * [torch.arange(self.num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
-        
-        # TODO: stop gradient flow here
 
+         # stop gradient flow here
         encoder_hidden_states = encoder_hidden_states.detach()
+        
+        # simply use one embedding per slot 
+        decoder_input_ids = torch.stack(bs * [torch.arange(self.num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
         
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
+            #attention_mask=decoder_attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             #inputs_embeds=decoder_inputs_embeds,
@@ -297,13 +295,12 @@ class Teacher(torch.nn.Module):
             output_hidden_states=False,
             use_cache=use_cache,
             past_key_values=past_key_values,
-            return_dict=return_dict,
+            return_dict=True,
             **kwargs_decoder,
         )       
         decoder_hidden_states =  decoder_outputs.last_hidden_state
         
-        # Here, we calculate the masked input (TODO: use gumbel softmax!)
-        
+        # Here, we calculate the masked input        
         # project token encodings (encoder_hidden_states) 
         # TODO
         # project slot encodings (decoder_hidden_states)
@@ -311,19 +308,13 @@ class Teacher(torch.nn.Module):
         # calc position replacement scores: assign slots to token positions
         # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
         m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
-        # add "constant slot" (filled with mean) that implies keeping the input TODO: check that!
+        # add "constant slots" (filled with mean) that imply keeping the input
         c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
         m = torch.cat([m, c], dim=-1)
         # "mask" special tokens (set to very negative value)
         # TODO
 
-        ## softmax over token positions (TODO: use gumbel!)
-        #m = torch.softmax(m, dim=1)
-        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
-        ## softmax over slots (TODO: use gumbel!)
-        #m = torch.softmax(m, dim=-1)
-        ##m = torch.nn.functional.gumbel_softmax(m, tau=self.gumbel_temperature, dim=-1)
-
+        # use gamble sinkhorn to create one hot matrix from logits 
         # TODO: check if gumbel_sinkhorn really requires positive values
         m = torch.nn.functional.relu(m)
         m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature)#, exclude_dim_2=0)
@@ -332,7 +323,7 @@ class Teacher(torch.nn.Module):
 
         # calc kept input
         keep_prob = m[:,:,self.num_slots:].sum(dim=-1, keepdims=True)
-        keep_embeds = inputs_embeds * keep_prob
+        keep_embeds = encoder_inputs_embeds * keep_prob
         # calc content replacement scores: assign slot content to token postions 
         token_slot_probs = m[:,:,:self.num_slots]
         replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
@@ -656,14 +647,12 @@ class CBertModel(PreTrainedModel):
             inputs_embeds = self.student.get_input_embeddings()(input_ids)
 
         new_input_embeds, new_labels = self.teacher(
-            inputs_embeds=inputs_embeds,
-            encoder_hidden_states=encoder_outputs.hidden_states[-1], 
             labels=labels,
+            encoder_inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_outputs.hidden_states[-1], 
             encoder_attention_mask=attention_mask,
-            decoder_attention_mask=decoder_attention_mask,
             use_cache=use_cache,
             past_key_values=past_key_values,
-            return_dict=return_dict,
             kwargs_decoder=kwargs_decoder
         )
 
@@ -691,7 +680,7 @@ class CBertModel(PreTrainedModel):
             'student': encoder_outputs["loss"],
         }
 
-        ## TODO: dont do this! handle losses by different optimizer that are linked to student / teacher parameters
+        ## TODO: dont do the following! handle losses by different optimizers that are linked only to student / teacher parameters
         #encoder_outputs["loss"] = sum(encoder_outputs["losses"].values())
         
         return encoder_outputs
