@@ -677,8 +677,8 @@ class CBertModel(PreTrainedModel):
         sl_e = torch.exp(-student_loss_mean)
         
         encoder_outputs["losses"] = {
-            # TODO: parametrize target loss value (0.8)
-            'teacher': self.teacher.crit(sl_e.unsqueeze(-1), torch.tensor([0.8], device=sl_e.device)),
+            # TODO: parametrize target loss value (0.8) and weight
+            'teacher': self.teacher.crit(sl_e.unsqueeze(-1), torch.tensor([0.8], device=sl_e.device)) * 100,
             'student': encoder_outputs["loss"],
         }
 
