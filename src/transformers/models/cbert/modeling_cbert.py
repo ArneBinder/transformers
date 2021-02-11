@@ -156,9 +156,16 @@ def get_delta(r, dim, exclude=None):
     d = torch.logsumexp(r, dim=dim, keepdim=True)
     if exclude is not None:
         if dim == 1:
-            d[:,:,exclude] = 0.0
+            #d[:,:,exclude] = 0.0
+            d_ = torch.zeros_like(d)
+            d_[:,:,:exclude] = d[:,:,:exclude]
+            d_[:,:,exclude:] = d[:,:,exclude:]
+            d = d_
         elif dim == 2:
-            d[:,exclude,:] = 0.0
+            #d[:,exclude,:] = 0.0
+            d_ = torch.zeros_like(d)
+            d_[:,:exclude,:] = d[:,:exclude,:]
+            d_[:,exclude:,:] = d[:,exclude:,:]
         else:
             raise Exception(f"exclusion for dim={dim} not supported")
     return d
@@ -169,6 +176,14 @@ def sinkhorn_sorting_operator(r, n_iters=8, exclude_dim_1=None, exclude_dim_2=No
         # note: the order was switched here
         r = r - get_delta(r, dim=1, exclude=exclude_dim_2)
         r = r - get_delta(r, dim=2, exclude=exclude_dim_1)
+
+        #d = torch.logsumexp(r, dim=1, keepdim=True)
+        #if exclude_dim_2 is not None:
+        #    r -= d
+        #else:
+        #    r -= d
+        #d = torch.logsumexp(r, dim=2, keepdim=True)
+        #r -= d
     return torch.exp(r)
 
 def gumbel_sinkhorn(r, n_iters=8, temperature=0.7, exclude_dim_1=None, exclude_dim_2=None):
@@ -513,6 +528,8 @@ class CBertModel(PreTrainedModel):
             argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
         }
 
+        #torch.autograd.set_detect_anomaly(True)
+
         generate_masking = self.training
 
         if generate_masking:
@@ -626,7 +643,7 @@ class CBertModel(PreTrainedModel):
         # TODO: stop gradient flow here for student training (or use dedicated optimizer for the trainer and student)
 
         # calc loss with new input
-        decoder_outputs = self.encoder(
+        encoder_outputs = self.encoder(
             input_ids=None,
             attention_mask=attention_mask,
             inputs_embeds=new_input_embeds,
