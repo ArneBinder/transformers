@@ -29,7 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Union
 
 from datasets import load_dataset
-from torch import nn, Tensor
+from torch import nn, Tensor, zeros
+from torch._C import Size
 
 import transformers
 from transformers import (
@@ -344,7 +345,11 @@ class MultiLossTrainer(Trainer):
         #return losses_sum.detach()
         return losses
 
-    def do_step(self, step, tr_loss, model, inputs, steps_in_epoch, epoch, trial):                
+    def do_step(self, step, tr_loss, model, inputs, steps_in_epoch, epoch, trial):    
+        
+        if not hasattr(self, "tr_losses"):
+            #self.tr_losses = tr_loss.unsqueeze(dim=0).expand(len(self.optimizer.d.keys()))
+            self.tr_losses = zeros(size=(len(self.optimizer.d.keys()),), device=tr_loss.device)
         
         for i, loss_name in enumerate(self.optimizer.d.keys()):
             if (step + 1) % self.args.gradient_accumulation_steps == 0:
@@ -371,6 +376,7 @@ class MultiLossTrainer(Trainer):
                 #self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
                 self.process_loss(current_loss)
                 tr_loss += current_loss
+                self.tr_losses[i] += current_loss
                 optimizer = self.optimizer.d[loss_name] if isinstance(self.optimizer, ContentDict) else self.optimizer
                 lr_scheduler = self.lr_scheduler.d[loss_name] if isinstance(self.lr_scheduler, ContentDict) else self.lr_scheduler
                 
@@ -422,8 +428,12 @@ class MultiLossTrainer(Trainer):
             tr_loss_scalar = tr_loss.item()
             # reset tr_loss to zero
             tr_loss -= tr_loss
-
             logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            for i, loss_name in enumerate(self.optimizer.d.keys()):
+                tr_loss_scalar_ = self.tr_losses[i].item()
+                # reset tr_loss to zero
+                self.tr_losses[i] -= self.tr_losses[i]
+                logs[f"loss/{loss_name}"] = round(tr_loss_scalar_ / (self.state.global_step - self._globalstep_last_logged), 4)
             # backward compatibility for pytorch schedulers
             lr_scheduler = self.lr_scheduler 
             if isinstance(lr_scheduler, ContentDict):
