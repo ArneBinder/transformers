@@ -345,29 +345,31 @@ class MultiLossTrainer(Trainer):
         return losses
 
     def do_step(self, step, tr_loss, model, inputs, steps_in_epoch, epoch, trial):                
+        
+        for i, loss_name in enumerate(self.optimizer.d.keys()):
+            if (step + 1) % self.args.gradient_accumulation_steps == 0:
+                self.control = self.callback_handler.on_step_begin(self.args, self.state, self.control)
 
-        if (step + 1) % self.args.gradient_accumulation_steps == 0:
-            self.control = self.callback_handler.on_step_begin(self.args, self.state, self.control)
-
-        if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
-            # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
-            with model.no_sync():
+            if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
+                # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
+                with model.no_sync():
+                    #tr_loss += self.training_step(model, inputs)
+                    losses_dict = self.training_step(model, inputs)
+            else:
                 #tr_loss += self.training_step(model, inputs)
                 losses_dict = self.training_step(model, inputs)
-        else:
-            #tr_loss += self.training_step(model, inputs)
-            losses_dict = self.training_step(model, inputs)
 
-        self._total_flos += self.floating_point_ops(inputs)
-        
-        if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
-            # last step in epoch but step is always smaller than gradient_accumulation_steps
-            steps_in_epoch <= self.args.gradient_accumulation_steps
-            and (step + 1) == steps_in_epoch
-        ):
-            for i, loss_name in enumerate(losses_dict.keys()):
+            self._total_flos += self.floating_point_ops(inputs)
+            
+            if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
+                # last step in epoch but step is always smaller than gradient_accumulation_steps
+                steps_in_epoch <= self.args.gradient_accumulation_steps
+                and (step + 1) == steps_in_epoch
+            ):
+            
                 current_loss = losses_dict[loss_name]
-                self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
+                #self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
+                self.process_loss(current_loss)
                 tr_loss += current_loss
                 optimizer = self.optimizer.d[loss_name] if isinstance(self.optimizer, ContentDict) else self.optimizer
                 lr_scheduler = self.lr_scheduler.d[loss_name] if isinstance(self.lr_scheduler, ContentDict) else self.lr_scheduler
@@ -401,11 +403,18 @@ class MultiLossTrainer(Trainer):
 
                 lr_scheduler.step()
                 model.zero_grad()
-                self.state.global_step += 1
-                self.state.epoch = epoch + (step + 1) / steps_in_epoch
-                self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
 
-                self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
+        if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
+            # last step in epoch but step is always smaller than gradient_accumulation_steps
+            steps_in_epoch <= self.args.gradient_accumulation_steps
+            and (step + 1) == steps_in_epoch
+        ):
+
+            self.state.global_step += 1
+            self.state.epoch = epoch + (step + 1) / steps_in_epoch
+            self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
+
+            self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch):
         if self.control.should_log:
