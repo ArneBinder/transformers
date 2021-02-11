@@ -259,6 +259,8 @@ class Teacher(torch.nn.Module):
         # TODO: check initialization
         self.c_keep = torch.nn.Parameter(torch.ones(1))
 
+        self.crit = torch.nn.MSELoss()
+
         self.decoder.resize_token_embeddings(self.num_slots)
         
 
@@ -676,7 +678,7 @@ class CBertModel(PreTrainedModel):
         
         encoder_outputs["losses"] = {
             # TODO: parametrize target loss value (0.8)
-            'teacher': torch.nn.functional.mse_loss(torch.tensor([sl_e]), torch.tensor([0.8])),
+            'teacher': self.teacher.crit(sl_e.unsqueeze(-1), torch.tensor([0.8], device=sl_e.device)),
             'student': encoder_outputs["loss"],
         }
 

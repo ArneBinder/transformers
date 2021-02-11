@@ -26,9 +26,10 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, Optional, Union
 
 from datasets import load_dataset
+from torch import nn, Tensor
 
 import transformers
 from transformers import (
@@ -44,9 +45,11 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+from transformers.file_utils import is_torch_tpu_available
 from transformers.models.cbert.modeling_cbert import CBertModel
 from transformers.models.encoder_decoder.configuration_encoder_decoder import EncoderDecoderConfig
 from transformers.models.encoder_decoder.modeling_encoder_decoder import EncoderDecoderModel
+from transformers.optimization import Adafactor, AdamW, get_scheduler
 from transformers.trainer_utils import is_main_process
 
 
@@ -173,6 +176,258 @@ class DataTrainingArguments:
             if self.validation_file is not None:
                 extension = self.validation_file.split(".")[-1]
                 assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
+
+
+class ContentDict:
+    def __init__(self, d: dict) -> None:
+        self.d = d
+
+    def state_dict(self) -> dict:
+        return {k:v for k, v in self.d.items()}
+
+    def consolidate_state_dict(self):
+        for k, v in self.d.items():
+            v.consolidate_state_dict()
+
+    def load_state_dict(self, state_dict):
+        for k, v in self.d.items():
+            v.load_state_dict(state_dict[k])
+    
+    def mean(self):
+        return {k: v.mean() for k, v in self.d.items()}
+
+    def __truediv__(self, scalar):
+        return {k: v / scalar for k, v in self.d.items()}
+
+    def __floordiv__(self, scalar):
+        return {k: v // scalar for k, v in self.d.items()}
+
+    def values(self):
+        return self.d.values()
+
+
+class MultiLossTrainer(Trainer):
+    
+    def create_optimizer_and_scheduler(self, num_training_steps: int):
+        prefixes = ['student', 'teacher']
+        optimizers = {prefix: self.create_optimizer_and_scheduler_single(num_training_steps=num_training_steps, parameter_prefix=prefix) for prefix in prefixes} 
+        self.optimizer = ContentDict({n:t[0] for n, t in optimizers.items()})
+        self.lr_scheduler = ContentDict({n:t[1] for n, t in optimizers.items()})
+
+
+
+    def create_optimizer_and_scheduler_single(self, num_training_steps: int, parameter_prefix: str = None):
+        """
+        Setup the optimizer and the learning rate scheduler.
+
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through :obj:`optimizers`, or subclass and override this method in a subclass.
+        """
+        
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay) and (parameter_prefix is None or n.startswith(parameter_prefix))],
+                "weight_decay": self.args.weight_decay,
+            },
+            {
+                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay) and (parameter_prefix is None or n.startswith(parameter_prefix))],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer_cls = Adafactor if self.args.adafactor else AdamW
+        if self.args.adafactor:
+            optimizer_cls = Adafactor
+            optimizer_kwargs = {"scale_parameter": False, "relative_step": False}
+        else:
+            optimizer_cls = AdamW
+            optimizer_kwargs = {
+                "betas": (self.args.adam_beta1, self.args.adam_beta2),
+                "eps": self.args.adam_epsilon,
+            }
+        optimizer_kwargs["lr"] = self.args.learning_rate
+        if self.sharded_dpp:
+            optimizer = OSS(
+                params=optimizer_grouped_parameters,
+                optim=optimizer_cls,
+                **optimizer_kwargs,
+            )
+        else:
+            optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+        lr_scheduler = get_scheduler(
+            self.args.lr_scheduler_type,
+            optimizer,
+            num_warmup_steps=self.args.warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        return optimizer, lr_scheduler
+
+    def compute_loss(self, model, inputs):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        outputs = model(**inputs)
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if isinstance(outputs, dict):
+            if "losses" in outputs:
+                if self.label_smoother is not None and "labels" in inputs:
+                    raise NotImplemented("not yet implemented")
+                return ContentDict(outputs["losses"])
+
+        if self.label_smoother is not None and "labels" in inputs:
+            return self.label_smoother(outputs, inputs["labels"])
+        else:
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            return outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+    def process_loss(self, loss, retain_graph=False):
+        if self.use_amp:
+            self.scaler.scale(loss).backward()
+        elif self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        elif self.deepspeed:
+            # calling on DS engine (model_wrapped == DDP(Deepspeed(PretrainedModule)))
+            self.model_wrapped.module.backward(loss)
+        else:
+            loss.backward(retain_graph=retain_graph)
+
+
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[Tensor, Any]]) -> Tensor:
+        """
+        Perform a training step on a batch of inputs.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (:obj:`nn.Module`):
+                The model to train.
+            inputs (:obj:`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument :obj:`labels`. Check your model's documentation for all accepted arguments.
+
+        Return:
+            :obj:`torch.Tensor`: The tensor with training loss on this batch.
+        """
+
+        model.train()
+        inputs = self._prepare_inputs(inputs)
+
+        if self.use_amp:
+            with autocast():
+                loss = self.compute_loss(model, inputs)
+        else:
+            loss = self.compute_loss(model, inputs)
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.args.gradient_accumulation_steps > 1:
+            loss = loss / self.args.gradient_accumulation_steps
+
+        losses = loss.d if isinstance(loss, ContentDict) else {'default': loss}
+        #losses_sum = 0
+        #for i, n in enumerate(losses.keys()):   
+        #    loss = losses[n] 
+        #    retain_graph = i < len(losses) - 1
+        #    self.process_loss(loss, retain_graph=retain_graph)
+        #    losses_sum += loss
+        #return losses_sum.detach()
+        return losses
+
+    def do_step(self, step, tr_loss, model, inputs, steps_in_epoch, epoch, trial):                
+
+        if (step + 1) % self.args.gradient_accumulation_steps == 0:
+            self.control = self.callback_handler.on_step_begin(self.args, self.state, self.control)
+
+        if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
+            # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
+            with model.no_sync():
+                #tr_loss += self.training_step(model, inputs)
+                losses_dict = self.training_step(model, inputs)
+        else:
+            #tr_loss += self.training_step(model, inputs)
+            losses_dict = self.training_step(model, inputs)
+
+        self._total_flos += self.floating_point_ops(inputs)
+        
+        if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
+            # last step in epoch but step is always smaller than gradient_accumulation_steps
+            steps_in_epoch <= self.args.gradient_accumulation_steps
+            and (step + 1) == steps_in_epoch
+        ):
+            for i, loss_name in enumerate(losses_dict.keys()):
+                current_loss = losses_dict[loss_name]
+                self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
+                tr_loss += current_loss
+                optimizer = self.optimizer.d[loss_name] if isinstance(self.optimizer, ContentDict) else self.optimizer
+                lr_scheduler = self.lr_scheduler.d[loss_name] if isinstance(self.lr_scheduler, ContentDict) else self.lr_scheduler
+                
+                # Gradient clipping
+                if self.args.max_grad_norm is not None and self.args.max_grad_norm > 0 and not self.deepspeed:
+                    # deepspeed does its own clipping
+
+                    if self.use_amp:
+                        # AMP: gradients need unscaling
+                        self.scaler.unscale_(optimizer)
+
+                    if hasattr(optimizer, "clip_grad_norm"):
+                        # Some optimizers (like the sharded optimizer) have a specific way to do gradient clipping
+                        optimizer.clip_grad_norm(self.args.max_grad_norm)
+                    else:
+                        # Revert to normal clipping otherwise, handling Apex or full precision
+                        nn.utils.clip_grad_norm_(
+                            amp.master_params(optimizer) if self.use_apex else model.parameters(),
+                            self.args.max_grad_norm,
+                        )
+
+                # Optimizer step
+                if is_torch_tpu_available():
+                    xm.optimizer_step(optimizer)
+                elif self.use_amp:
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    optimizer.step()
+
+                lr_scheduler.step()
+                model.zero_grad()
+                self.state.global_step += 1
+                self.state.epoch = epoch + (step + 1) / steps_in_epoch
+                self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
+
+                self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
+
+    def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch):
+        if self.control.should_log:
+            logs: Dict[str, float] = {}
+            tr_loss_scalar = tr_loss.item()
+            # reset tr_loss to zero
+            tr_loss -= tr_loss
+
+            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            # backward compatibility for pytorch schedulers
+            lr_scheduler = self.lr_scheduler 
+            if isinstance(lr_scheduler, ContentDict):
+                lr_scheduler = tuple(lr_scheduler.values())[0]
+            logs["learning_rate"] = (
+                lr_scheduler.get_last_lr()[0]
+                #if version.parse(torch.__version__) >= version.parse("1.4")
+                #else lr_scheduler.get_lr()[0]
+            )
+            self._total_loss_scalar += tr_loss_scalar
+            self._globalstep_last_logged = self.state.global_step
+
+            self.log(logs)       
 
 
 def main():
@@ -424,7 +679,8 @@ def main():
     #data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
     # Initialize our Trainer
-    trainer = Trainer(
+    trainer = MultiLossTrainer(
+    #trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=tokenized_datasets["train"] if training_args.do_train else None,
