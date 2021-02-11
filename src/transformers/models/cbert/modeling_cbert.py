@@ -688,14 +688,25 @@ class CBertModel(PreTrainedModel):
             labels=new_labels,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            return_dict=True,
             **kwargs_encoder,
         )
+        # calculate trainer loss
         student_loss = encoder_outputs["loss"]
         n_predict = sum(new_labels != -100).sum() 
         student_loss_mean = student_loss / n_predict
-        # TODO: calculate trainer loss
+        # TODO: is this a good idea?
+        sl_e = torch.exp(-student_loss_mean)
+        
+        encoder_outputs["losses"] = {
+            # TODO: parametrize target loss value (0.8)
+            'teacher': torch.nn.functional.mse_loss(torch.tensor([sl_e]), torch.tensor([0.8])),
+            'student': encoder_outputs["loss"],
+        }
 
+        ## TODO: dont do this! handle losses by different optimizer that are linked to student / teacher parameters
+        #encoder_outputs["loss"] = sum(encoder_outputs["losses"].values())
+        
         return encoder_outputs
         
     
