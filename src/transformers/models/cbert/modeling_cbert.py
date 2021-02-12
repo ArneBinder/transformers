@@ -382,6 +382,7 @@ class CBertModel(PreTrainedModel):
         config: Optional[PretrainedConfig] = None,
         encoder: Optional[PreTrainedModel] = None,
         decoder: Optional[PreTrainedModel] = None,
+        teach: Optional[bool] = True,
         **teacher_kwargs
     ):
         assert config is not None or (
@@ -407,7 +408,7 @@ class CBertModel(PreTrainedModel):
 
             decoder = AutoModel.from_config(config.decoder)
 
-        
+        self.teach = teach
         self.student = encoder
         self.teacher = Teacher(
             decoder=decoder, 
@@ -632,7 +633,7 @@ class CBertModel(PreTrainedModel):
 
         #torch.autograd.set_detect_anomaly(True)
 
-        generate_masking = self.training
+        generate_masking = self.teach and self.training
 
         if generate_masking:
             # TODO: consider special tokens (label should be set to -100 for these positions)

@@ -701,9 +701,11 @@ def main():
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=data_args.mlm_probability)
     #data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
+    #model.teach = False
+    
     # Initialize our Trainer
-    trainer = MultiLossTrainer(
-    #trainer = Trainer(
+    trainer_cls = MultiLossTrainer if model.teach else Trainer
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=tokenized_datasets["train"] if training_args.do_train else None,
