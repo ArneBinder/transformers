@@ -351,30 +351,30 @@ class MultiLossTrainer(Trainer):
             #self.tr_losses = tr_loss.unsqueeze(dim=0).expand(len(self.optimizer.d.keys()))
             self.tr_losses = zeros(size=(len(self.optimizer.d.keys()),), device=tr_loss.device)
         
-        for i, loss_name in enumerate(self.optimizer.d.keys()):
-            if (step + 1) % self.args.gradient_accumulation_steps == 0:
-                self.control = self.callback_handler.on_step_begin(self.args, self.state, self.control)
+        
+        if (step + 1) % self.args.gradient_accumulation_steps == 0:
+            self.control = self.callback_handler.on_step_begin(self.args, self.state, self.control)
 
-            if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
-                # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
-                with model.no_sync():
-                    #tr_loss += self.training_step(model, inputs)
-                    losses_dict = self.training_step(model, inputs)
-            else:
+        if ((step + 1) % self.args.gradient_accumulation_steps != 0) and self.args.local_rank != -1:
+            # Avoid unnecessary DDP synchronization since there will be no backward pass on this example.
+            with model.no_sync():
                 #tr_loss += self.training_step(model, inputs)
                 losses_dict = self.training_step(model, inputs)
+        else:
+            #tr_loss += self.training_step(model, inputs)
+            losses_dict = self.training_step(model, inputs)
 
-            self._total_flos += self.floating_point_ops(inputs)
-            
-            if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
-                # last step in epoch but step is always smaller than gradient_accumulation_steps
-                steps_in_epoch <= self.args.gradient_accumulation_steps
-                and (step + 1) == steps_in_epoch
-            ):
-            
+        self._total_flos += self.floating_point_ops(inputs)
+        
+        if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
+            # last step in epoch but step is always smaller than gradient_accumulation_steps
+            steps_in_epoch <= self.args.gradient_accumulation_steps
+            and (step + 1) == steps_in_epoch
+        ):
+            for i, loss_name in enumerate(self.optimizer.d.keys()):
                 current_loss = losses_dict[loss_name]
-                #self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
-                self.process_loss(current_loss)
+                self.process_loss(current_loss, retain_graph=i < len(losses_dict) - 1)
+                #self.process_loss(current_loss)
                 tr_loss += current_loss
                 self.tr_losses[i] += current_loss
                 optimizer = self.optimizer.d[loss_name] if isinstance(self.optimizer, ContentDict) else self.optimizer
