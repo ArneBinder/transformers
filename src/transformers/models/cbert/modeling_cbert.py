@@ -239,6 +239,7 @@ class Teacher(torch.nn.Module):
         max_sequence_length: Optional[int] = 512,
         # TODO: parametrize 
         mlm_percentage: Optional[float] = 0.15,
+        projection_dim: Optional[int] = 1536,
     ):  
         super().__init__()
         self.encoder_config = encoder_config
@@ -254,6 +255,11 @@ class Teacher(torch.nn.Module):
         #assert (
         #    self.encoder.get_output_embeddings() is None
         #), "The encoder {} should not have a LM Head. Please use a model without LM Head"
+
+        self.encoder_output_projection = torch.nn.Linear(self.encoder_config.hidden_size, projection_dim)
+        self.decoder_output_projection = torch.nn.Linear(self.decoder.config.hidden_size, projection_dim)
+        #self.output_projection_activation = torch.nn.Tanh()
+        self.output_projection_activation = torch.nn.Identity()
 
         self.slot_replacement_head = LMPredictionHead(encoder_config, vocab_size=encoder_config.vocab_size if self.predict_replacement_tokens else 2)
         # TODO: check initialization
@@ -303,13 +309,17 @@ class Teacher(torch.nn.Module):
         decoder_hidden_states =  decoder_outputs.last_hidden_state
         
         # Here, we calculate the masked input        
+        # take inspiration from https://arxiv.org/pdf/2011.01675.pdf
         # project token encodings (encoder_hidden_states) 
-        # TODO
+        encoder_output = self.encoder_output_projection(encoder_hidden_states)
         # project slot encodings (decoder_hidden_states)
-        # TODO
+        decoder_output = self.decoder_output_projection(decoder_hidden_states)
         # calc position replacement scores: assign slots to token positions
         # (batch, time, dim), (batch, slot, dim) -> (batch, time, slot)
-        m = torch.matmul(encoder_hidden_states, decoder_hidden_states.transpose(1,2))
+        m = torch.matmul(
+            self.output_projection_activation(encoder_output), 
+            self.output_projection_activation(decoder_output).transpose(1,2)
+        )
         # add "constant slots" (filled with mean) that imply keeping the input
         c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
         m = torch.cat([m, c], dim=-1)
