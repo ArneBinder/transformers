@@ -271,6 +271,8 @@ class MultiLossTrainer(Trainer):
         Subclass and override for custom behavior.
         """
         outputs = model(**inputs)
+        self.outputs_log = outputs.get("log", {})
+
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
@@ -434,6 +436,8 @@ class MultiLossTrainer(Trainer):
                 # reset tr_loss to zero
                 self.tr_losses[i] -= self.tr_losses[i]
                 logs[f"loss/{loss_name}"] = round(tr_loss_scalar_ / (self.state.global_step - self._globalstep_last_logged), 4)
+            for k, v in self.outputs_log.items():
+                logs[k] = v.item()
             # backward compatibility for pytorch schedulers
             lr_scheduler = self.lr_scheduler 
             if isinstance(lr_scheduler, ContentDict):

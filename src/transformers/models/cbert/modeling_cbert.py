@@ -309,7 +309,7 @@ class Teacher(torch.nn.Module):
         decoder_hidden_states =  decoder_outputs.last_hidden_state
         
         # Here, we calculate the masked input        
-        # take inspiration from https://arxiv.org/pdf/2011.01675.pdf
+        # TODO: take inspiration from https://arxiv.org/pdf/2011.01675.pdf
         # project token encodings (encoder_hidden_states) 
         encoder_output = self.encoder_output_projection(encoder_hidden_states)
         # project slot encodings (decoder_hidden_states)
@@ -682,6 +682,7 @@ class CBertModel(PreTrainedModel):
         # calculate trainer loss
         student_loss = encoder_outputs["loss"]
         n_predict = sum(new_labels != -100).sum() 
+        p_predict = n_predict / (new_labels.size(0) * new_labels.size(1))
         student_loss_mean = student_loss / n_predict
         # TODO: is this a good idea?
         sl_e = torch.exp(-student_loss_mean)
@@ -694,7 +695,9 @@ class CBertModel(PreTrainedModel):
 
         ## TODO: dont do the following! handle losses by different optimizers that are linked only to student / teacher parameters
         #encoder_outputs["loss"] = sum(encoder_outputs["losses"].values())
-        
+
+        encoder_outputs["log"] = {"percentage_predict": p_predict.detach()}
+
         return encoder_outputs
         
     
