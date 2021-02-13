@@ -266,7 +266,8 @@ class Teacher(torch.nn.Module):
 
         self.crit = torch.nn.MSELoss()
 
-        self.decoder.resize_token_embeddings(self.num_slots)
+        #self.decoder.resize_token_embeddings(self.num_slots + 1)
+        self.decoder.resize_token_embeddings(max_sequence_length)
         
 
     def forward(
@@ -281,12 +282,18 @@ class Teacher(torch.nn.Module):
     ):
         bs = labels.size(0)
         sl = labels.size(1)
+        n_slots_keep = sl - self.num_slots
 
          # stop gradient flow here
         encoder_hidden_states = encoder_hidden_states.detach()
         
         # simply use one embedding per slot 
-        decoder_input_ids = torch.stack(bs * [torch.arange(self.num_slots, dtype=torch.long, device=encoder_hidden_states.device)])
+        #tmp = torch.cat([
+        #    torch.zeros(size=(n_slots_keep-1,), dtype=torch.long, device=encoder_hidden_states.device), 
+        #    torch.arange(self.num_slots+1, dtype=torch.long, device=encoder_hidden_states.device)
+        #])
+        tmp = torch.arange(sl, dtype=torch.long, device=encoder_hidden_states.device)
+        decoder_input_ids = torch.stack(bs * [tmp])
         
         # Decode
         decoder_outputs = self.decoder(
@@ -320,8 +327,8 @@ class Teacher(torch.nn.Module):
             self.output_projection_activation(decoder_output).transpose(1,2)
         )
         # add "constant slots" (filled with mean) that imply keeping the input
-        c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
-        m = torch.cat([m, c], dim=-1)
+        #c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
+        #m = torch.cat([m, c], dim=-1)
         # "mask" special tokens (set to very negative value)
         # TODO
 
@@ -333,11 +340,11 @@ class Teacher(torch.nn.Module):
         m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
 
         # calc kept input
-        keep_prob = m[:,:,self.num_slots:].sum(dim=-1, keepdims=True)
+        keep_prob = m[:,:,:n_slots_keep].sum(dim=-1, keepdims=True)
         keep_embeds = encoder_inputs_embeds * keep_prob
         # calc content replacement scores: assign slot content to token postions 
-        token_slot_probs = m[:,:,:self.num_slots]
-        replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
+        token_slot_probs = m[:,:,n_slots_keep:]
+        replacement_type_scores = self.slot_replacement_head(decoder_hidden_states[:,n_slots_keep:,:])
         # TODO: use gumbel softmax also here?
         replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
         # (batch, time, slot), (batch, slot, replacement) -> (batch, time, replacement)
@@ -361,7 +368,7 @@ class Teacher(torch.nn.Module):
         # create "label mask" from m: only replaced tokens should be considered for loss prediction
         m_argmax = m.max(dim=-1)[1]
         new_labels = labels.clone()
-        new_labels[m_argmax>=self.num_slots] = -100
+        new_labels[m_argmax < n_slots_keep] = -100
         
         return new_input_embeds, new_labels
 
@@ -636,10 +643,6 @@ class CBertModel(PreTrainedModel):
 
         generate_masking = self.teach and self.training
 
-        if generate_masking:
-            # TODO: consider special tokens (label should be set to -100 for these positions)
-            labels = input_ids
-
         if encoder_outputs is None:
             encoder_outputs = self.student(
                 input_ids=input_ids,
@@ -698,7 +701,10 @@ class CBertModel(PreTrainedModel):
         ## TODO: dont do the following! handle losses by different optimizers that are linked only to student / teacher parameters
         #encoder_outputs["loss"] = sum(encoder_outputs["losses"].values())
 
-        encoder_outputs["log"] = {"percentage_predict": p_predict.detach()}
+        encoder_outputs["log"] = {
+            "percentage_predict": p_predict.detach(),
+            "sl_e": sl_e.detach(),
+        }
 
         return encoder_outputs
         

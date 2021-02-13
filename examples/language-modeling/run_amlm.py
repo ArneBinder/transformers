@@ -26,7 +26,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from datasets import load_dataset
 from torch import nn, Tensor, zeros
@@ -46,11 +46,13 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+from transformers.data.data_collator import _collate_batch
 from transformers.file_utils import is_torch_tpu_available
 from transformers.models.cbert.modeling_cbert import CBertModel
 from transformers.models.encoder_decoder.configuration_encoder_decoder import EncoderDecoderConfig
 from transformers.models.encoder_decoder.modeling_encoder_decoder import EncoderDecoderModel
 from transformers.optimization import Adafactor, AdamW, get_scheduler
+from transformers.tokenization_utils_base import BatchEncoding
 from transformers.trainer_utils import is_main_process
 
 
@@ -452,6 +454,31 @@ class MultiLossTrainer(Trainer):
 
             self.log(logs)       
 
+@dataclass
+class MyDataCollatorForLanguageModeling(DataCollatorForLanguageModeling):
+    model = None
+    
+    def __call__(
+        self, examples: List[Union[List[int], Tensor, Dict[str, Tensor]]]
+    ) -> Dict[str, Tensor]:
+        # Handle dict or lists with proper padding and conversion to tensor.
+        if isinstance(examples[0], (dict, BatchEncoding)):
+            batch = self.tokenizer.pad(examples, return_tensors="pt")
+        else:
+            batch = {"input_ids": _collate_batch(examples, self.tokenizer)}
+
+        # If special token mask has been preprocessed, pop it from the dict.
+        special_tokens_mask = batch.pop("special_tokens_mask", None)
+        if self.mlm and not self.model.training:
+            batch["input_ids"], batch["labels"] = self.mask_tokens(
+                batch["input_ids"], special_tokens_mask=special_tokens_mask
+            )
+        else:
+            labels = batch["input_ids"].clone()
+            if self.tokenizer.pad_token_id is not None:
+                labels[labels == self.tokenizer.pad_token_id] = -100
+            batch["labels"] = labels
+        return batch
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -699,8 +726,10 @@ def main():
 
     # Data collator
     # This one will take care of randomly masking the tokens.
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=data_args.mlm_probability)
-    #data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    #data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=data_args.mlm_probability)
+    # This masks only when not in training mode!
+    data_collator = MyDataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=data_args.mlm_probability)
+    data_collator.model = model
 
     #model.teach = False
     
