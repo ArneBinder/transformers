@@ -320,6 +320,7 @@ class Teacher(torch.nn.Module):
             self.output_projection_activation(encoder_output), 
             self.output_projection_activation(decoder_output).transpose(1,2)
         )
+        """
         # add "constant slots" (filled with mean) that imply keeping the input
         c = torch.ones(size=(bs, sl, sl-self.num_slots), device=m.device) * self.c_keep
         m = torch.cat([m, c], dim=-1)
@@ -332,12 +333,21 @@ class Teacher(torch.nn.Module):
         m = gumbel_sinkhorn(m, temperature=self.gumbel_temperature)#, exclude_dim_2=0)
         # create a hard mask to prevent any leakage of information
         m = torch.nn.functional.gumbel_softmax(torch.log(m), hard=True, dim=-1)
+        """
+
+        #m = torch.nn.functional.gumbel_softmax(m, hard=True, dim=1)
+        m = torch.nn.functional.softmax(m, dim=1)
 
         # calc kept input
-        keep_prob = m[:,:,self.num_slots:].sum(dim=-1, keepdims=True)
-        keep_embeds = encoder_inputs_embeds * keep_prob
+        #keep_prob = m[:,:,self.num_slots:].sum(dim=-1, keepdims=True)
+        m_sum = m.sum(dim=-1)
+        # double assigment loss
+        loss_double = torch.nn.functional.relu(m_sum - 1.).sum()
+        keep_prob = torch.nn.functional.relu(1. - m_sum)
+        keep_embeds = encoder_inputs_embeds * keep_prob.unsqueeze(-1)
         # calc content replacement scores: assign slot content to token postions 
-        token_slot_probs = m[:,:,:self.num_slots]
+        #token_slot_probs = m[:,:,:self.num_slots]
+        token_slot_probs = m
         replacement_type_scores = self.slot_replacement_head(decoder_hidden_states)
         # TODO: use gumbel softmax also here?
         replacement_type_probs = torch.softmax(replacement_type_scores, dim=-1)
@@ -357,14 +367,19 @@ class Teacher(torch.nn.Module):
             # (batch, time, i), (batch, time, i, embedding) -> (batch, time, embedding)
             replace_embeds = torch.einsum("bti, btie -> bte", replacement_probs, embedding_weights)
         
-        new_input_embeds = keep_embeds + replace_embeds
-
+        #new_input_embeds = keep_embeds + replace_embeds
+        probs_hart = torch.nn.functional.gumbel_softmax(torch.stack([keep_prob, 1. - keep_prob], dim=-1), dim=-1, hard=True)
+        new_inputs_stacked = torch.stack([keep_embeds, replace_embeds], dim=-1)
+        # (batch, time, type), (batch, time, dim, type) -> (batch, time, dim)
+        new_input_embeds = torch.einsum("bti,btdi->btd", probs_hart, new_inputs_stacked)
+        keep_prob_hart = probs_hart[:,:,0]
         # create "label mask" from m: only replaced tokens should be considered for loss prediction
-        m_argmax = m.max(dim=-1)[1]
+        #m_argmax = m.max(dim=-1)[1]
         new_labels = labels.clone()
-        new_labels[m_argmax>=self.num_slots] = -100
-        
-        return new_input_embeds, new_labels
+        #new_labels[m_argmax>=self.num_slots] = -100
+        new_labels[keep_prob_hart > 0.8] = -100
+
+        return new_input_embeds, new_labels, loss_double
 
 @add_start_docstrings(CBERT_START_DOCSTRING)
 class CBertModel(PreTrainedModel):
@@ -659,7 +674,7 @@ class CBertModel(PreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.student.get_input_embeddings()(input_ids)
 
-        new_input_embeds, new_labels = self.teacher(
+        new_input_embeds, new_labels, loss_double = self.teacher(
             labels=labels,
             encoder_inputs_embeds=inputs_embeds,
             encoder_hidden_states=encoder_outputs.hidden_states[-1], 
@@ -687,17 +702,25 @@ class CBertModel(PreTrainedModel):
         student_loss_mean = student_loss / n_predict
         # TODO: is this a good idea?
         sl_e = torch.exp(-student_loss_mean)
-        
+        loss_teacher = self.teacher.crit(sl_e.unsqueeze(-1), torch.tensor([0.7], device=sl_e.device)) * 100
+        #loss_double = loss_double * 10
+        encoder_outputs["log"] = {
+            "percentage_predict": p_predict.detach(),
+            "loss_double": loss_double.detach(),
+            "loss_teacher": loss_teacher,
+            "sl_e": sl_e.detach(),
+        }
+
         encoder_outputs["losses"] = {
             # TODO: parametrize target loss value (0.8) and weight
-            'teacher': self.teacher.crit(sl_e.unsqueeze(-1), torch.tensor([0.8], device=sl_e.device)) * 100,
+            'teacher': loss_teacher + loss_double,
             'student': encoder_outputs["loss"],
         }
 
         ## TODO: dont do the following! handle losses by different optimizers that are linked only to student / teacher parameters
         #encoder_outputs["loss"] = sum(encoder_outputs["losses"].values())
 
-        encoder_outputs["log"] = {"percentage_predict": p_predict.detach()}
+        
 
         return encoder_outputs
         
