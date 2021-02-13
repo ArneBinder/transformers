@@ -607,8 +607,9 @@ def main():
         decoder = AutoModel.from_config(config_decoder)
 
     encoder.resize_token_embeddings(len(tokenizer))
-
-    model = CBertModel(encoder=encoder, decoder=decoder)
+    
+    mask_token_id = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
+    model = CBertModel(encoder=encoder, decoder=decoder, mask_token_id=mask_token_id)
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
