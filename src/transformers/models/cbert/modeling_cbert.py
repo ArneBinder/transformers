@@ -229,12 +229,11 @@ class Teacher(torch.nn.Module):
         decoder: PreTrainedModel,
         encoder_config: PretrainedConfig,
         encoder_embeddings: torch.nn.Embedding,
+        mask_token_id: int,
         # If True, predict a certain replacement token from the encoder vocabulary for each slot. 
         # Otherwise, predict one of: mask token or random token
         predict_replacement_tokens: Optional[bool] = False,
         gumbel_temperature: Optional[float] = 1.,
-        # TODO: get that from model/tokenizer
-        mask_token_id: Optional[int] = 103,
         # TODO: take from model (attention: encoder.config.max_length is different!!)
         max_sequence_length: Optional[int] = 512,
         # TODO: parametrize 
@@ -379,6 +378,7 @@ class CBertModel(PreTrainedModel):
 
     def __init__(
         self,
+        mask_token_id: int,
         config: Optional[PretrainedConfig] = None,
         encoder: Optional[PreTrainedModel] = None,
         decoder: Optional[PreTrainedModel] = None,
@@ -414,6 +414,7 @@ class CBertModel(PreTrainedModel):
             decoder=decoder, 
             encoder_config=self.student.config, 
             encoder_embeddings=self.student.get_input_embeddings(), 
+            mask_token_id=mask_token_id,
             **teacher_kwargs
         )
 
