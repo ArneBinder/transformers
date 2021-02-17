@@ -168,6 +168,13 @@ class DataTrainingArguments:
             "help": "If set, use only this first number of instances for validation."
         },
     )
+    dont_teach: bool = field(
+        default=False,
+        metadata={
+            "help": "Wether to disable teaching (i.e. a teacher model generates dynamically masked input)."
+            "If True, will use default mlm input mask generation."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -210,10 +217,13 @@ class ContentDict:
 
 
 class MultiLossTrainer(Trainer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.training_group_prefixes = ['student', 'teacher']
     
     def create_optimizer_and_scheduler(self, num_training_steps: int):
-        prefixes = ['student', 'teacher']
-        optimizers = {prefix: self.create_optimizer_and_scheduler_single(num_training_steps=num_training_steps, parameter_prefix=prefix) for prefix in prefixes} 
+        optimizers = {prefix: self.create_optimizer_and_scheduler_single(num_training_steps=num_training_steps, parameter_prefix=prefix) for prefix in self.training_group_prefixes} 
         self.optimizer = ContentDict({n:t[0] for n, t in optimizers.items()})
         self.lr_scheduler = ContentDict({n:t[1] for n, t in optimizers.items()})
 
@@ -453,6 +463,16 @@ class MultiLossTrainer(Trainer):
             self._globalstep_last_logged = self.state.global_step
 
             self.log(logs)       
+        
+        metrics = None
+        if self.control.should_evaluate:
+            metrics = self.evaluate()
+            self._report_to_hp_search(trial, epoch, metrics)
+
+        if self.control.should_save:
+            self._save_checkpoint(model, trial, metrics=metrics)
+            self.control = self.callback_handler.on_save(self.args, self.state, self.control)
+
 
 @dataclass
 class MyDataCollatorForLanguageModeling(DataCollatorForLanguageModeling):
@@ -731,7 +751,10 @@ def main():
     data_collator = MyDataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=data_args.mlm_probability)
     data_collator.model = model
 
-    #model.teach = False
+    if data_args.dont_teach:
+        logger.warning("Teaching is disabled!")
+
+    model.teach = not data_args.dont_teach
     
     # Initialize our Trainer
     trainer_cls = MultiLossTrainer if model.teach else Trainer
